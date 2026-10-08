@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# build output (rebuild with npm run build)
+main.js
+*.js.map
+
+# Obsidian saves plugin settings here; it is local state, not source
+data.json
+
+# hot-reload marker
+.hotreload
+
+# editors and OS
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
