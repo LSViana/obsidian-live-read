@@ -26,6 +26,8 @@ export interface PendingInput {
 	pending: readonly Kind[];
 	pairs: readonly MarkerPair[];
 	hidden: Range[];
+	/** The hidden part after each link's text (see insertPosition). */
+	linkEnds?: readonly Range[];
 	/** Reads document text, used to copy the markers of an existing span. */
 	slice: (from: number, to: number) => string;
 }
@@ -48,7 +50,7 @@ export interface PendingEdit {
  */
 export function planPendingInput(input: PendingInput): PendingEdit {
 	const { text, pending, pairs, slice } = input;
-	let q = insertPosition(input.pos, input.hidden);
+	let q = insertPosition(input.pos, input.hidden, input.linkEnds);
 
 	const insideOf = (kind: Kind, at: number) =>
 		innermost(pairs.filter((p) => p.kind === kind && p.open.to < at && at <= p.close.from));
@@ -126,6 +128,7 @@ export function planSpaceInput(
 	pairs: readonly MarkerPair[],
 	hidden: Range[],
 	deferred: Deferred | null,
+	linkEnds: readonly Range[] = [],
 ): SpaceEdit | null {
 	if (!isSpace(text)) return null;
 	// More spaces after a deferred span keep it deferred.
@@ -133,7 +136,7 @@ export function planSpaceInput(
 		const end = deferred.end + text.length;
 		return { from: pos, insert: text, cursor: end, deferred: { ...deferred, end } };
 	}
-	const q = insertPosition(pos, hidden);
+	const q = insertPosition(pos, hidden, linkEnds);
 	// Follow closing markers that touch, so ***x*** is left in one go.
 	let to = q;
 	for (;;) {

@@ -5,12 +5,17 @@
 import './setup-dom';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StreamLanguage } from '@codemirror/language';
+import { HighlightStyle, StreamLanguage, type StringStream, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { defaultKeymap } from '@codemirror/commands';
-import { liveReadExtension, toggleStyleAtCursor } from '../../src/extension';
+import {
+	applyLinkEdit,
+	linkContext,
+	liveReadExtension,
+	toggleStyleAtCursor,
+} from '../../src/extension';
 import { editorLivePreviewField, setLivePreview } from './obsidian-mock';
 
 interface Styles {
@@ -19,9 +24,26 @@ interface Styles {
 	strike: boolean;
 	highlight: boolean;
 	code: boolean;
+	/** Where we are inside a link, like Obsidian's parser tracks it. */
+	link: 'none' | 'mdText' | 'mdAfter' | 'mdUrl' | 'wiki';
+	image: boolean;
+	embed: boolean;
+	wikiAlias: boolean;
+	inAlias: boolean;
 }
 
-const fresh = (): Styles => ({ strong: false, em: false, strike: false, highlight: false, code: false });
+const fresh = (): Styles => ({
+	strong: false,
+	em: false,
+	strike: false,
+	highlight: false,
+	code: false,
+	link: 'none',
+	image: false,
+	embed: false,
+	wikiAlias: false,
+	inAlias: false,
+});
 
 function styleNames(s: Styles): string[] {
 	const out: string[] = [];
@@ -31,6 +53,92 @@ function styleNames(s: Styles): string[] {
 	if (s.highlight) out.push('highlight');
 	return out;
 }
+
+const join = (...parts: (string | false)[]) => parts.filter(Boolean).join(' ');
+
+/** Link tokens with the same classes Obsidian 1.14 uses. */
+function linkToken(stream: StringStream, s: Styles): string | null | undefined {
+	const img = s.image && 'image';
+	if (s.link === 'wiki') {
+		if (stream.match(']]')) {
+			s.link = 'none';
+			s.embed = s.wikiAlias = s.inAlias = false;
+			return 'formatting-link formatting-link-end';
+		}
+		if (stream.eat('|')) {
+			s.inAlias = true;
+			return 'hmd-internal-link link-alias-pipe';
+		}
+		if (!stream.eatWhile((c) => c !== '|' && c !== ']')) stream.next();
+		return join(
+			'hmd-internal-link',
+			s.inAlias ? 'link-alias' : s.wikiAlias && 'link-has-alias',
+			s.embed && 'hmd-embed',
+		);
+	}
+	if (s.link === 'mdUrl') {
+		if (stream.eat(')')) {
+			s.link = 'none';
+			s.image = false;
+			return join('formatting formatting-link-string string url', img);
+		}
+		stream.eatWhile((c) => c !== ')');
+		return join('string url', img);
+	}
+	if (s.link === 'mdAfter') {
+		if (stream.eat('(')) {
+			s.link = 'mdUrl';
+			return join('formatting formatting-link-string string url', img);
+		}
+		s.link = 'none';
+		s.image = false;
+		return undefined;
+	}
+	if (s.link === 'mdText') {
+		if (stream.eat(']')) {
+			s.link = 'mdAfter';
+			return join('formatting formatting-link link', ...styleNames(s), img);
+		}
+		return undefined;
+	}
+	const rest = stream.string.slice(stream.pos);
+	const wiki = /^(!?)\[\[([^\]]*)\]\]/.exec(rest);
+	if (wiki) {
+		stream.pos += wiki[1]!.length + 2;
+		s.link = 'wiki';
+		s.embed = wiki[1] === '!';
+		s.wikiAlias = wiki[2]!.includes('|');
+		return join('formatting-link formatting-link-start', s.embed && 'formatting-embed');
+	}
+	if (rest.startsWith('![')) {
+		stream.next();
+		s.image = true;
+		return 'image image-marker';
+	}
+	if (stream.eat('[')) {
+		s.link = 'mdText';
+		return join('formatting formatting-link link', ...styleNames(s), img);
+	}
+	return undefined;
+}
+
+const LINK_CLASSES = [
+	'formatting-link',
+	'formatting-link-start',
+	'formatting-link-end',
+	'formatting-embed',
+	'formatting-link-string',
+	'hmd-internal-link',
+	'hmd-embed',
+	'link-alias',
+	'link-alias-pipe',
+	'link-has-alias',
+	'link',
+	'string',
+	'url',
+	'image',
+	'image-marker',
+];
 
 const markdownLike = StreamLanguage.define<Styles>({
 	name: 'markdown-like',
@@ -49,6 +157,7 @@ const markdownLike = StreamLanguage.define<Styles>({
 			'strikethrough',
 			'highlight',
 			'inline-code',
+			...LINK_CLASSES,
 		].map((name) => [name, tags.content]),
 	),
 	startState: fresh,
@@ -63,11 +172,13 @@ const markdownLike = StreamLanguage.define<Styles>({
 			stream.eatWhile((c) => c !== '`');
 			return 'inline-code';
 		}
+		const link = linkToken(stream, s);
+		if (link !== undefined) return link;
 		if (stream.eat('`')) {
 			s.code = true;
 			return 'formatting formatting-code inline-code';
 		}
-		const markers: [string, keyof Styles, string][] = [
+		const markers: [string, 'strong' | 'em' | 'strike' | 'highlight', string][] = [
 			['**', 'strong', 'formatting-strong'],
 			['~~', 'strike', 'formatting-strikethrough'],
 			['==', 'highlight', 'formatting-highlight'],
@@ -82,11 +193,10 @@ const markdownLike = StreamLanguage.define<Styles>({
 			}
 		}
 		stream.next();
-		stream.eatWhile((c) => !'*~=`'.includes(c));
-		return styleNames(s).join(' ') || null;
+		stream.eatWhile((c) => !'*~=`[]!'.includes(c));
+		return join(...styleNames(s), s.link === 'mdText' && 'link', s.link === 'mdText' && s.image && 'image') || null;
 	},
 });
-
 function makeView(doc: string, cursor = 0, liveRead = true): EditorView {
 	return new EditorView({
 		state: EditorState.create({
@@ -94,6 +204,8 @@ function makeView(doc: string, cursor = 0, liveRead = true): EditorView {
 			selection: EditorSelection.cursor(cursor),
 			extensions: [
 				markdownLike,
+				// Draw tokens in their own elements, as Obsidian does.
+				syntaxHighlighting(HighlightStyle.define([{ tag: tags.content, class: 'tok' }])),
 				editorLivePreviewField,
 				liveRead ? liveReadExtension() : [],
 				keymap.of(defaultKeymap),
@@ -471,4 +583,157 @@ test('a space in the middle of a span is typed normally', () => {
 	type(view, ' ');
 	assert.equal(doc(view), '**bo ld**');
 	view.destroy();
+});
+
+// Links and wikilinks (step 5).
+
+test('links show only their text', () => {
+	const view = makeView('[text](http://x.io) and [[note]] and [[note|alias]] end');
+	assert.equal(shownText(view), 'text and note and alias end');
+	view.destroy();
+});
+
+test('embeds, images and plain brackets are left alone', () => {
+	const text = '![[pic.png]] and ![alt](a.png) and [not a link] end';
+	const view = makeView(text);
+	assert.equal(shownText(view), text);
+	view.destroy();
+});
+
+test('typing at either edge of a link goes outside it', () => {
+	const end = makeView('[text](u) z', 5);
+	type(end, 'X');
+	assert.equal(doc(end), '[text](u)X z');
+	end.destroy();
+
+	const after = makeView('[text](u) z', 9);
+	type(after, 'X');
+	assert.equal(doc(after), '[text](u)X z');
+	after.destroy();
+
+	const start = makeView('[text](u) z', 1);
+	type(start, 'X');
+	assert.equal(doc(start), 'X[text](u) z');
+	start.destroy();
+
+	const wiki = makeView('[[note]]', 6);
+	type(wiki, 'X');
+	assert.equal(doc(wiki), '[[note]]X');
+	wiki.destroy();
+});
+
+test('typing inside link text edits it', () => {
+	const view = makeView('[text](u)', 3);
+	type(view, 'X');
+	assert.equal(doc(view), '[teXxt](u)');
+	view.destroy();
+});
+
+test('arrow keys skip the hidden parts of a link', () => {
+	const view = makeView('[ab](u)c', 0);
+	const stops: number[] = [];
+	for (let i = 0; i < 3; i++) {
+		press(view, 'ArrowRight');
+		stops.push(cursor(view));
+	}
+	assert.deepEqual(stops, [2, 7, 8]);
+	view.destroy();
+});
+
+test('Backspace after a link deletes its last letter; the last one removes the link', () => {
+	const view = makeView('[ab](u) c', 7);
+	press(view, 'Backspace');
+	assert.equal(doc(view), '[a](u) c');
+	press(view, 'Backspace');
+	assert.equal(doc(view), ' c');
+	view.destroy();
+});
+
+/** Clicks the element holding `text` and tells whether Obsidian would see it. */
+function clickReachesObsidian(view: EditorView, text: string, init: MouseEventInit = {}): boolean {
+	let reached = false;
+	const listener = () => (reached = true);
+	view.dom.addEventListener('click', listener);
+	const walker = document.createTreeWalker(view.contentDOM, 4 /* NodeFilter.SHOW_TEXT */);
+	let node: Node | null;
+	while ((node = walker.nextNode())) {
+		if (node.textContent?.includes(text)) break;
+	}
+	assert.ok(node?.parentElement, `no element with ${text}`);
+	node.parentElement.dispatchEvent(new window.MouseEvent('click', { bubbles: true, button: 0, ...init }));
+	view.dom.removeEventListener('click', listener);
+	return reached;
+}
+
+test('a plain click on link text does not open it; Ctrl/Cmd+click does', () => {
+	const view = makeView('see [link](http://x.io) or plain');
+	assert.equal(clickReachesObsidian(view, 'link'), false);
+	assert.equal(clickReachesObsidian(view, 'link', { ctrlKey: true }), true);
+	assert.equal(clickReachesObsidian(view, 'link', { metaKey: true }), true);
+	assert.equal(clickReachesObsidian(view, 'plain'), true);
+	view.destroy();
+
+	const wiki = makeView('go [[note]] now');
+	assert.equal(clickReachesObsidian(wiki, 'note'), false);
+	wiki.destroy();
+
+	const off = makeView('see [link](http://x.io)', 0, false);
+	assert.equal(clickReachesObsidian(off, 'link'), true);
+	off.destroy();
+});
+
+test('the link popup edits the link under the cursor', () => {
+	const view = makeView('[text](http://x.io) after', 3);
+	const ctx = linkContext(view);
+	assert.ok(ctx);
+	assert.equal(ctx.text, 'text');
+	assert.equal(ctx.target, 'http://x.io');
+	assert.equal(ctx.kind, 'markdown');
+	applyLinkEdit(view, ctx, 'new', 'https://y.io');
+	assert.equal(doc(view), '[new](https://y.io) after');
+	assert.equal(shownText(view), 'new after');
+	view.destroy();
+
+	const wiki = makeView('a [[note|alias]] b', 10);
+	const wctx = linkContext(wiki);
+	assert.deepEqual([wctx?.text, wctx?.target, wctx?.kind], ['alias', 'note', 'wiki']);
+	applyLinkEdit(wiki, wctx!, 'shown', 'Other');
+	assert.equal(doc(wiki), 'a [[Other|shown]] b');
+	wiki.destroy();
+});
+
+test('an empty target in the popup removes the link and keeps the text', () => {
+	const view = makeView('[text](http://x.io) after', 3);
+	applyLinkEdit(view, linkContext(view)!, 'text', '');
+	assert.equal(doc(view), 'text after');
+	view.destroy();
+});
+
+test('with a selection and no link, the popup creates one', () => {
+	const view = makeView('a word b', 0);
+	view.dispatch({ selection: { anchor: 2, head: 6 } });
+	const ctx = linkContext(view)!;
+	assert.equal(ctx.link, null);
+	assert.equal(ctx.text, 'word');
+	applyLinkEdit(view, ctx, ctx.text, 'My note');
+	assert.equal(doc(view), 'a [[My note|word]] b');
+	assert.equal(shownText(view), 'a word b');
+	view.destroy();
+
+	const url = makeView('a word b', 0);
+	url.dispatch({ selection: { anchor: 2, head: 6 } });
+	applyLinkEdit(url, linkContext(url)!, 'word', 'https://x.io');
+	assert.equal(doc(url), 'a [word](https://x.io) b');
+	url.destroy();
+});
+
+test('with Live Read off or outside Live Preview, Obsidian handles Ctrl+K', () => {
+	const off = makeView('[text](u)', 3, false);
+	assert.equal(linkContext(off), null);
+	off.destroy();
+
+	const source = makeView('[text](u)', 3);
+	source.dispatch({ effects: setLivePreview.of(false) });
+	assert.equal(linkContext(source), null);
+	source.destroy();
 });

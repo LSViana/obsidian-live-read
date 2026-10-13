@@ -1,5 +1,6 @@
 // Pure logic for Live Read. No Obsidian or CodeMirror imports here, so it can
 // be unit tested with plain Node.
+import { type LinkSpan, parseLinks } from './links.ts';
 
 export interface Token {
 	from: number;
@@ -15,8 +16,11 @@ export interface Range {
 
 export type Kind = 'strong' | 'em' | 'strike' | 'highlight' | 'code';
 
+/** Pairs are inline styles, or links (their hidden open and close parts). */
+export type PairKind = Kind | 'link';
+
 export interface MarkerPair {
-	kind: Kind;
+	kind: PairKind;
 	open: Range;
 	close: Range;
 }
@@ -99,22 +103,33 @@ function addKind(map: Map<Token, Set<Kind>>, token: Token, kind: Kind) {
 }
 
 export interface HiddenResult {
-	/** Every matched open/close pair. */
+	/** Every matched open/close pair, links included. */
 	pairs: MarkerPair[];
 	/** Marker ranges to hide, sorted, touching ranges merged. */
 	hidden: Range[];
+	/** Complete links found. */
+	links: LinkSpan[];
+	/** The hidden part after each link's text, like `](url)` or `]]`. */
+	linkEnds: Range[];
 }
 
 /** Takes the syntax tokens of each line and returns what Live Read hides. */
 export function computeHidden(lines: Token[][]): HiddenResult {
 	const pairs: MarkerPair[] = [];
 	const hidden: Range[] = [];
+	const links: LinkSpan[] = [];
 	for (const line of lines) {
 		const result = pairLine(line);
 		pairs.push(...result.pairs);
 		hidden.push(...result.hidden);
+		for (const link of parseLinks(line)) {
+			links.push(link);
+			pairs.push({ kind: 'link', open: link.open, close: link.close });
+			hidden.push(link.open, link.close);
+		}
 	}
-	return { pairs, hidden: mergeRanges(hidden) };
+	links.sort((a, b) => a.from - b.from);
+	return { pairs, hidden: mergeRanges(hidden), links, linkEnds: links.map((l) => l.close) };
 }
 
 export function mergeRanges(ranges: Range[]): Range[] {
@@ -147,9 +162,13 @@ function hiddenStartingAt(pos: number, hidden: Range[]): Range | undefined {
  * styled span stays inside it, text typed at the start goes outside. Both
  * cases mean "if the cursor is right after a hidden marker, type before it".
  */
-export function insertPosition(pos: number, hidden: Range[]): number {
+export function insertPosition(pos: number, hidden: Range[], linkEnds: readonly Range[] = []): number {
 	const r = hiddenEndingAt(pos, hidden);
-	return r ? r.from : pos;
+	const q = r ? r.from : pos;
+	// Links are different: text typed at the end of a link goes after it,
+	// so typing after [[note]] does not change which note it points to.
+	const end = linkEnds.find((l) => l.from === q);
+	return end ? end.to : q;
 }
 
 /**

@@ -54,7 +54,24 @@ The plugin does this by wrapping Obsidian's built-in commands
 handles Ctrl+B before any plugin hotkey or editor keymap can. This relies on
 `app.commands`, which is not public API. Unloading the plugin restores them.
 
-Not covered yet: headings, lists, quotes, links, code blocks, math, callouts.
+## Links
+
+While Live Read is on, `[text](url)`, `[[note]]` and `[[note|alias]]` show only
+their text (the note name, or the alias), even under the cursor. Embeds
+(`![[...]]`) and images are left to Obsidian.
+
+- Click link text to put the cursor there and edit it. Ctrl+click (Cmd+click
+  on macOS) opens the link.
+- Typing at either edge of a link goes outside it, so typing after `[[note]]`
+  does not change which note it points to.
+- Ctrl+K, or the "Edit link" command, opens a small popup to change the text
+  and the target. With a selection and no link under the cursor, the popup
+  creates a link: a web address makes `[text](url)`, a note name makes
+  `[[note|text]]`. Leaving the target empty removes the link and keeps the text.
+- With Live Read off, Ctrl+K does what Obsidian normally does. It is wrapped
+  the same way as Ctrl+B (`editor:insert-link`).
+
+Not covered yet: headings, lists, quotes, code blocks, math, callouts.
 A style that spans more than one line keeps its markers visible.
 
 ## Build

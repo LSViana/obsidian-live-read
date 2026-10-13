@@ -1,5 +1,5 @@
-// Takes over Obsidian's built-in style toggles (Ctrl+B, Ctrl+I, ...) while
-// the plugin is loaded. Obsidian runs its own Ctrl+B before any plugin
+// Takes over some of Obsidian's built-in editor commands (Ctrl+B, Ctrl+I,
+// Ctrl+K, ...) while the plugin is loaded. Obsidian runs its own Ctrl+B before any plugin
 // command or editor keymap sees the key, so wrapping the command is the only
 // way to change what it does. Each wrapper asks `handle` first and falls back
 // to Obsidian's original code when `handle` returns false.
@@ -33,17 +33,33 @@ export function wrapStyleCommands(
 	app: unknown,
 	handle: (editor: unknown, kind: Kind) => boolean,
 ): () => void {
+	const handlers: Record<string, (editor: unknown) => boolean> = {};
+	for (const [id, kind] of Object.entries(STYLE_COMMANDS)) {
+		handlers[id] = (editor) => handle(editor, kind);
+	}
+	return wrapEditorCommands(app, handlers);
+}
+
+/**
+ * Wraps Obsidian editor commands by id. Each handler runs first; when it
+ * returns false, Obsidian's original code runs. Returns a function that puts
+ * the originals back.
+ */
+export function wrapEditorCommands(
+	app: unknown,
+	handlers: Readonly<Record<string, (editor: unknown) => boolean>>,
+): () => void {
 	const registry = (app as AppLike).commands?.commands;
 	if (!registry) return () => {};
 	let disposed = false;
 	const restores: (() => void)[] = [];
 
-	for (const [id, kind] of Object.entries(STYLE_COMMANDS)) {
+	for (const [id, handle] of Object.entries(handlers)) {
 		const command = registry[id];
 		const original = command?.editorCallback;
 		if (!command || typeof original !== 'function') continue;
 		const wrapped: EditorCallback = function (this: unknown, editor, ctx) {
-			if (!disposed && handle(editor, kind)) return;
+			if (!disposed && handle(editor)) return;
 			return original.call(this, editor, ctx);
 		};
 		command.editorCallback = wrapped;

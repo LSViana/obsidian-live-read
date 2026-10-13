@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { STYLE_COMMANDS, wrapStyleCommands } from '../src/command-wrap.ts';
+import { STYLE_COMMANDS, wrapEditorCommands, wrapStyleCommands } from '../src/command-wrap.ts';
 
 function fakeApp() {
 	const calls: string[] = [];
@@ -71,4 +71,19 @@ test('after unloading, a wrapper someone else kept in the chain just passes thro
 test('a missing registry or command does not throw', () => {
 	assert.doesNotThrow(() => wrapStyleCommands({}, () => true)());
 	assert.doesNotThrow(() => wrapStyleCommands({ commands: { commands: {} } }, () => true)());
+});
+
+test('wrapEditorCommands wraps any editor command by id', () => {
+	const { app, commands, calls } = fakeApp();
+	commands['editor:insert-link'] = { editorCallback: () => calls.push('link') };
+	let handled = true;
+	const restore = wrapEditorCommands(app, { 'editor:insert-link': () => handled });
+	commands['editor:insert-link']!.editorCallback!('ed', {});
+	assert.deepEqual(calls, []);
+	handled = false;
+	commands['editor:insert-link']!.editorCallback!('ed', {});
+	assert.deepEqual(calls, ['link']);
+	restore();
+	commands['editor:insert-link']!.editorCallback!('ed', {});
+	assert.deepEqual(calls, ['link', 'link']);
 });

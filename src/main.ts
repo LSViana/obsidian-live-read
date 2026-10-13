@@ -1,8 +1,9 @@
 import { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { Notice, Plugin } from 'obsidian';
-import { wrapStyleCommands } from './command-wrap';
-import { liveReadExtension, toggleStyleAtCursor } from './extension';
+import { wrapEditorCommands, wrapStyleCommands } from './command-wrap';
+import { applyLinkEdit, linkContext, liveReadExtension, toggleStyleAtCursor } from './extension';
+import { LinkModal } from './link-modal';
 import { DEFAULT_SETTINGS, LiveReadSettings } from './settings';
 
 export default class LiveReadPlugin extends Plugin {
@@ -37,11 +38,47 @@ export default class LiveReadPlugin extends Plugin {
 		// no selection, Obsidian's own behavior otherwise.
 		this.register(
 			wrapStyleCommands(this.app, (editor, kind) => {
-				if (!this.settings.enabled) return false;
-				const view = (editor as { cm?: unknown } | null)?.cm;
-				return view instanceof EditorView && toggleStyleAtCursor(view, kind);
+				const view = this.liveView(editor);
+				return view !== null && toggleStyleAtCursor(view, kind);
 			}),
 		);
+
+		// Ctrl+K opens the link popup while Live Read is on.
+		this.register(
+			wrapEditorCommands(this.app, {
+				'editor:insert-link': (editor) => this.openLinkPopup(editor, false),
+			}),
+		);
+
+		this.addCommand({
+			id: 'edit-link',
+			name: 'Edit link',
+			editorCheckCallback: (checking, editor) => this.openLinkPopup(editor, checking),
+		});
+	}
+
+	/** The CodeMirror view of an Obsidian editor, when Live Read is on. */
+	private liveView(editor: unknown): EditorView | null {
+		if (!this.settings.enabled) return null;
+		const view = (editor as { cm?: unknown } | null)?.cm;
+		return view instanceof EditorView ? view : null;
+	}
+
+	/** Opens the link popup. Returns false when Obsidian should handle it. */
+	private openLinkPopup(editor: unknown, checking: boolean): boolean {
+		const view = this.liveView(editor);
+		const ctx = view && linkContext(view);
+		if (!view || !ctx) return false;
+		if (checking) return true;
+		new LinkModal(
+			this.app,
+			{ editing: ctx.link !== null, text: ctx.text, target: ctx.target },
+			(text, target) => {
+				if (!applyLinkEdit(view, ctx, text, target)) view.focus();
+			},
+			() => view.focus(),
+		).open();
+		return true;
 	}
 
 	async setEnabled(enabled: boolean) {
