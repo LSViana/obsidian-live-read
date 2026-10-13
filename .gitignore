@@ -4,6 +4,7 @@ node_modules/
 # build output (rebuild with npm run build)
 main.js
 *.js.map
+.test-build/
 
 # Obsidian saves plugin settings here; it is local state, not source
 data.json

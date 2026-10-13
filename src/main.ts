@@ -1,5 +1,6 @@
 import { Extension } from '@codemirror/state';
 import { Notice, Plugin } from 'obsidian';
+import { liveReadExtension } from './extension';
 import { DEFAULT_SETTINGS, LiveReadSettings } from './settings';
 
 export default class LiveReadPlugin extends Plugin {
@@ -18,7 +19,7 @@ export default class LiveReadPlugin extends Plugin {
 		this.addCommand({
 			id: 'toggle',
 			name: 'Toggle Live Read',
-			hotkeys: [{ modifiers: ['Mod', 'Alt'], key: 'l' }],
+			hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'l' }],
 			callback: () => this.setEnabled(!this.settings.enabled),
 		});
 
@@ -47,9 +48,8 @@ export default class LiveReadPlugin extends Plugin {
 		this.updateStatusBar();
 	}
 
-	// Filled in by the inline styles phase.
 	private buildExtensions(): Extension[] {
-		return [];
+		return liveReadExtension();
 	}
 
 	private updateStatusBar() {
