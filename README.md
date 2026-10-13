@@ -40,6 +40,10 @@ italic (Ctrl+I), strikethrough, highlight and inline code work like Notion:
   moving the cursor first cancels it.
 - Inside a styled span: pressing the toggle closes the span at the cursor,
   so the next letters are plain.
+- Spaces typed at the end of a styled span go just after its closing marker
+  until a letter follows, because markdown does not accept `**word **` as
+  bold. The letter then joins the span, spaces included. If you move the
+  cursor away first, the spaces stay outside.
 
 Strikethrough, highlight and code have no default hotkey in Obsidian; bind
 them in Settings > Hotkeys if you want. When Live Read is off, or outside Live

@@ -96,6 +96,73 @@ export function planPendingInput(input: PendingInput): PendingEdit {
 	return { from: q, insert: before + text + after, cursor: q + before.length + text.length };
 }
 
+/** True for typed text that is only spaces or tabs. */
+export function isSpace(text: string): boolean {
+	return /^[ \t\u00a0]+$/.test(text);
+}
+
+/**
+ * A space typed at the end of a styled span. Markdown does not accept a
+ * closing marker right after a space (`**word **` is not bold), so the space
+ * goes after the closing marker for now. The span is remembered as
+ * "deferred": if the next thing typed is a letter, the marker moves after it.
+ */
+export interface Deferred {
+	/** The closing marker(s) that were jumped over. */
+	from: number;
+	to: number;
+	/** End of the spaces typed after the marker. */
+	end: number;
+}
+
+export interface SpaceEdit extends PendingEdit {
+	deferred: Deferred;
+}
+
+/** Plans a typed space at `pos`, or returns null if it is not at a span end. */
+export function planSpaceInput(
+	pos: number,
+	text: string,
+	pairs: readonly MarkerPair[],
+	hidden: Range[],
+	deferred: Deferred | null,
+): SpaceEdit | null {
+	if (!isSpace(text)) return null;
+	// More spaces after a deferred span keep it deferred.
+	if (deferred && pos === deferred.end) {
+		const end = deferred.end + text.length;
+		return { from: pos, insert: text, cursor: end, deferred: { ...deferred, end } };
+	}
+	const q = insertPosition(pos, hidden);
+	// Follow closing markers that touch, so ***x*** is left in one go.
+	let to = q;
+	for (;;) {
+		const closing = pairs.filter((p) => p.close.from === to);
+		if (closing.length === 0) break;
+		to = Math.max(...closing.map((p) => p.close.to));
+	}
+	if (to === q) return null;
+	const end = to + text.length;
+	return { from: to, insert: text, cursor: end, deferred: { from: q, to, end } };
+}
+
+export interface MoveEdit {
+	changes: { from: number; to?: number; insert: string }[];
+	cursor: number;
+}
+
+/** A letter typed after deferred spaces: move the closing marker after it. */
+export function planDeferredLetter(deferred: Deferred, text: string, marker: string): MoveEdit {
+	const size = deferred.to - deferred.from;
+	return {
+		changes: [
+			{ from: deferred.from, to: deferred.to, insert: '' },
+			{ from: deferred.end, insert: text + marker },
+		],
+		cursor: deferred.end - size + text.length,
+	};
+}
+
 function innermost(pairs: MarkerPair[]): MarkerPair | undefined {
 	let best: MarkerPair | undefined;
 	for (const p of pairs) {

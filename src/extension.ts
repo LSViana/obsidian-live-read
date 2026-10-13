@@ -6,6 +6,7 @@ import {
 	Prec,
 	StateEffect,
 	StateField,
+	TransactionSpec,
 	findClusterBreak,
 } from '@codemirror/state';
 import {
@@ -30,7 +31,14 @@ import {
 	sameRanges,
 	skipHiddenEdge,
 } from './hidden-ranges';
-import { planPendingInput, togglePending } from './pending';
+import {
+	type Deferred,
+	isSpace,
+	planDeferredLetter,
+	planPendingInput,
+	planSpaceInput,
+	togglePending,
+} from './pending';
 
 const hideMarker = Decoration.replace({});
 
@@ -218,26 +226,74 @@ const pendingField = StateField.define<Kind[]>({
 	},
 });
 
+const setDeferred = StateEffect.define<Deferred | null>();
+
+/** Spaces typed after a span's closing marker, waiting for a letter. */
+const deferredField = StateField.define<Deferred | null>({
+	create: () => null,
+	update(value, tr) {
+		for (const e of tr.effects) if (e.is(setDeferred)) return e.value;
+		if (tr.docChanged || (tr.selection && !tr.selection.eq(tr.startState.selection))) return null;
+		return value;
+	},
+});
+
 // Typing with pending styles writes the markers together with the text.
-const pendingTyping = EditorView.inputHandler.of((view, from, to, text) => {
-	if (from !== to || view.composing) return false;
-	const pending = view.state.field(pendingField, false);
+// Spaces at the end of a styled span go after its closing marker until a
+// letter follows (see planSpaceInput).
+const styledTyping = EditorView.inputHandler.of((view, from, to, text) => {
+	if (from !== to || view.composing || singleCursor(view) !== from) return false;
 	const p = view.plugin(liveReadPlugin);
-	if (!pending?.length || !p || singleCursor(view) !== from) return false;
+	const pending = view.state.field(pendingField, false);
+	const deferred = view.state.field(deferredField, false) ?? null;
+	if (!p || !pending) return false;
+	const keep = setPending.of(pending);
+	const apply = (spec: TransactionSpec) =>
+		view.dispatch({ userEvent: 'input.type', scrollIntoView: true, ...spec });
+
+	if (isSpace(text)) {
+		const space = planSpaceInput(from, text, p.pairs, p.hidden, deferred);
+		if (space) {
+			apply({
+				changes: { from: space.from, insert: space.insert },
+				selection: { anchor: space.cursor },
+				effects: [keep, setDeferred.of(space.deferred)],
+			});
+			return true;
+		}
+		if (!pending.length) return false;
+		// A space before the first letter of a pending style stays plain.
+		const at = insertPosition(from, p.hidden);
+		apply({ changes: { from: at, insert: text }, selection: { anchor: at + text.length }, effects: keep });
+		return true;
+	}
+
+	let styles = pending;
+	if (deferred && from === deferred.end) {
+		if (!pending.length) {
+			const move = planDeferredLetter(deferred, text, view.state.sliceDoc(deferred.from, deferred.to));
+			apply({ changes: move.changes, selection: { anchor: move.cursor } });
+			return true;
+		}
+		// Toggling a style of the span off after the space: the span stays
+		// closed before the space, so that style needs nothing more.
+		const closed = p.pairs.filter((x) => x.close.from >= deferred.from && x.close.to <= deferred.to);
+		styles = pending.filter((k) => !closed.some((x) => x.kind === k));
+	}
+	if (!styles.length) {
+		if (styles === pending) return false;
+		apply({ changes: { from, insert: text }, selection: { anchor: from + text.length } });
+		return true;
+	}
 	const edit = planPendingInput({
 		pos: from,
 		text,
-		pending,
+		pending: styles,
 		pairs: p.pairs,
 		hidden: p.hidden,
 		slice: (a, b) => view.state.sliceDoc(a, b),
 	});
-	view.dispatch({
-		changes: { from: edit.from, insert: edit.insert },
-		selection: { anchor: edit.cursor },
-		userEvent: 'input.type',
-		scrollIntoView: true,
-	});
+	apply({ changes: { from: edit.from, insert: edit.insert }, selection: { anchor: edit.cursor } });
 	return true;
 });
 
@@ -258,9 +314,10 @@ export function liveReadExtension(): Extension[] {
 	return [
 		liveReadPlugin,
 		pendingField,
+		deferredField,
 		EditorView.atomicRanges.of((view) => view.plugin(liveReadPlugin)?.decorations ?? Decoration.none),
 		Prec.highest(editKeys),
-		Prec.highest(pendingTyping),
+		Prec.highest(styledTyping),
 		Prec.high(edgeTyping),
 	];
 }

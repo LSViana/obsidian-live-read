@@ -380,3 +380,95 @@ test('outside Live Preview, or with Live Read off, Obsidian handles it', () => {
 	assert.equal(toggleStyleAtCursor(off, 'strong'), false);
 	off.destroy();
 });
+
+// Spaces in a styled span (step 4).
+
+test('typing a space at the end of new bold keeps the markers hidden', () => {
+	const view = makeView('', 0);
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'h');
+	type(view, 'i');
+	type(view, ' ');
+	assert.equal(doc(view), '**hi** ');
+	assert.equal(shownText(view), 'hi ');
+	type(view, 't');
+	assert.equal(doc(view), '**hi t**');
+	assert.equal(shownText(view), 'hi t');
+	type(view, 'o');
+	assert.equal(doc(view), '**hi to**');
+	view.destroy();
+});
+
+test('several spaces, then a letter, stay in the span', () => {
+	const view = makeView('**hi**', 6);
+	type(view, ' ');
+	type(view, ' ');
+	assert.equal(doc(view), '**hi**  ');
+	type(view, 'x');
+	assert.equal(doc(view), '**hi  x**');
+	assert.equal(shownText(view), 'hi  x');
+	view.destroy();
+});
+
+test('space, then Ctrl+B to turn bold off, then a letter: the letter is plain', () => {
+	const view = makeView('', 0);
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'h');
+	type(view, ' ');
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'x');
+	assert.equal(doc(view), '**h** x');
+	assert.equal(shownText(view), 'h x');
+	view.destroy();
+});
+
+test('Ctrl+B to turn bold off, then a space, then a letter: plain too', () => {
+	const view = makeView('', 0);
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'h');
+	toggleStyleAtCursor(view, 'strong');
+	type(view, ' ');
+	type(view, 'x');
+	assert.equal(doc(view), '**h** x');
+	view.destroy();
+});
+
+test('space, then moving the cursor away: the space stays outside', () => {
+	const view = makeView('**hi**', 6);
+	type(view, ' ');
+	view.dispatch({ selection: { anchor: 0 } });
+	view.dispatch({ selection: { anchor: 7 } });
+	type(view, 'x');
+	assert.equal(doc(view), '**hi** x');
+	view.destroy();
+});
+
+test('Ctrl+B then a space first: the space is plain and bold waits for a letter', () => {
+	const view = makeView('a', 1);
+	toggleStyleAtCursor(view, 'strong');
+	type(view, ' ');
+	assert.equal(doc(view), 'a ');
+	type(view, 'x');
+	assert.equal(doc(view), 'a **x**');
+	view.destroy();
+});
+
+test('spaces at the end of every style stay outside until a letter', () => {
+	for (const kind of ['em', 'strike', 'highlight', 'code'] as const) {
+		const view = makeView('', 0);
+		toggleStyleAtCursor(view, kind);
+		type(view, 'a');
+		type(view, ' ');
+		assert.equal(shownText(view), 'a ', kind);
+		type(view, 'b');
+		assert.equal(shownText(view), 'a b', kind);
+		view.destroy();
+	}
+});
+
+test('a space in the middle of a span is typed normally', () => {
+	const view = makeView('**bold**', 4);
+	type(view, ' ');
+	assert.equal(doc(view), '**bo ld**');
+	view.destroy();
+});
