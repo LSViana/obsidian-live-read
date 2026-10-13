@@ -10,7 +10,7 @@ import { tags } from '@lezer/highlight';
 import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { defaultKeymap } from '@codemirror/commands';
-import { liveReadExtension } from '../../src/extension';
+import { liveReadExtension, toggleStyleAtCursor } from '../../src/extension';
 import { editorLivePreviewField, setLivePreview } from './obsidian-mock';
 
 interface Styles {
@@ -87,7 +87,7 @@ const markdownLike = StreamLanguage.define<Styles>({
 	},
 });
 
-function makeView(doc: string, cursor = 0): EditorView {
+function makeView(doc: string, cursor = 0, liveRead = true): EditorView {
 	return new EditorView({
 		state: EditorState.create({
 			doc,
@@ -95,7 +95,7 @@ function makeView(doc: string, cursor = 0): EditorView {
 			extensions: [
 				markdownLike,
 				editorLivePreviewField,
-				liveReadExtension(),
+				liveRead ? liveReadExtension() : [],
 				keymap.of(defaultKeymap),
 			],
 		}),
@@ -274,4 +274,109 @@ test('multi-line documents: each line is handled on its own', () => {
 	const view = makeView('**a**\nplain **b\n==c==');
 	assert.equal(shownText(view), 'aplain **bc');
 	view.destroy();
+});
+
+// Style toggles (Ctrl+B and friends), Notion style.
+
+const doc = (view: EditorView) => view.state.doc.toString();
+
+test('Ctrl+B with no selection writes nothing until a letter is typed', () => {
+	const view = makeView('a  b', 2);
+	assert.equal(toggleStyleAtCursor(view, 'strong'), true);
+	assert.equal(doc(view), 'a  b');
+	type(view, 'h');
+	type(view, 'i');
+	assert.equal(doc(view), 'a **hi** b');
+	assert.equal(shownText(view), 'a hi b');
+	view.destroy();
+});
+
+test('pressing Ctrl+B again turns bold off for the next letters', () => {
+	const view = makeView('', 0);
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'a');
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'b');
+	type(view, 'c');
+	assert.equal(doc(view), '**a**bc');
+	view.destroy();
+});
+
+test('pressing Ctrl+B twice before typing cancels it', () => {
+	const view = makeView('', 0);
+	toggleStyleAtCursor(view, 'strong');
+	toggleStyleAtCursor(view, 'strong');
+	type(view, 'a');
+	assert.equal(doc(view), 'a');
+	view.destroy();
+});
+
+test('moving the cursor without typing cancels the pending style', () => {
+	const view = makeView('ab', 2);
+	toggleStyleAtCursor(view, 'strong');
+	view.dispatch({ selection: { anchor: 1 } });
+	type(view, 'x');
+	assert.equal(doc(view), 'axb');
+	view.destroy();
+});
+
+test('Ctrl+B inside a bold word closes it there, so the next letters are plain', () => {
+	const middle = makeView('a **bold** c', 6);
+	toggleStyleAtCursor(middle, 'strong');
+	type(middle, 'x');
+	assert.equal(doc(middle), 'a **bo**x**ld** c');
+	assert.equal(shownText(middle), 'a boxld c');
+	middle.destroy();
+
+	const end = makeView('a **bold** c', 10);
+	toggleStyleAtCursor(end, 'strong');
+	type(end, 'x');
+	type(end, 'y');
+	assert.equal(doc(end), 'a **bold**xy c');
+	end.destroy();
+});
+
+test('every style toggle works the same way', () => {
+	for (const [kind, out] of [
+		['em', '*x*'],
+		['strike', '~~x~~'],
+		['highlight', '==x=='],
+		['code', '`x`'],
+	] as const) {
+		const view = makeView('', 0);
+		toggleStyleAtCursor(view, kind);
+		type(view, 'x');
+		assert.equal(doc(view), out, kind);
+		assert.equal(shownText(view), 'x', kind);
+		view.destroy();
+	}
+});
+
+test('bold and italic together', () => {
+	const view = makeView('', 0);
+	toggleStyleAtCursor(view, 'strong');
+	toggleStyleAtCursor(view, 'em');
+	type(view, 'x');
+	type(view, 'y');
+	assert.equal(doc(view), '***xy***');
+	assert.equal(shownText(view), 'xy');
+	view.destroy();
+});
+
+test('with a selection, Obsidian handles it (wrap or unwrap)', () => {
+	const view = makeView('abc', 0);
+	view.dispatch({ selection: { anchor: 0, head: 2 } });
+	assert.equal(toggleStyleAtCursor(view, 'strong'), false);
+	view.destroy();
+});
+
+test('outside Live Preview, or with Live Read off, Obsidian handles it', () => {
+	const source = makeView('abc', 1);
+	source.dispatch({ effects: setLivePreview.of(false) });
+	assert.equal(toggleStyleAtCursor(source, 'strong'), false);
+	source.destroy();
+
+	const off = makeView('abc', 1, false);
+	assert.equal(toggleStyleAtCursor(off, 'strong'), false);
+	off.destroy();
 });

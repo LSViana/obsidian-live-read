@@ -1,5 +1,13 @@
 import { syntaxTree } from '@codemirror/language';
-import { EditorSelection, EditorState, Extension, Prec, findClusterBreak } from '@codemirror/state';
+import {
+	EditorSelection,
+	EditorState,
+	Extension,
+	Prec,
+	StateEffect,
+	StateField,
+	findClusterBreak,
+} from '@codemirror/state';
 import {
 	Decoration,
 	DecorationSet,
@@ -10,6 +18,7 @@ import {
 } from '@codemirror/view';
 import { editorLivePreviewField } from 'obsidian';
 import {
+	Kind,
 	MarkerPair,
 	Range,
 	Token,
@@ -21,6 +30,7 @@ import {
 	sameRanges,
 	skipHiddenEdge,
 } from './hidden-ranges';
+import { planPendingInput, togglePending } from './pending';
 
 const hideMarker = Decoration.replace({});
 
@@ -190,11 +200,67 @@ const edgeTyping = EditorView.inputHandler.of((view, from, to, text) => {
 	return true;
 });
 
+const setPending = StateEffect.define<Kind[]>();
+
+/**
+ * Styles turned on or off with the toggle commands since the cursor last
+ * moved. Nothing is written to the file until the user types. Any edit or
+ * cursor move clears them.
+ */
+const pendingField = StateField.define<Kind[]>({
+	create: () => [],
+	update(value, tr) {
+		for (const e of tr.effects) if (e.is(setPending)) return e.value;
+		if (tr.docChanged || (tr.selection && !tr.selection.eq(tr.startState.selection))) {
+			return value.length ? [] : value;
+		}
+		return value;
+	},
+});
+
+// Typing with pending styles writes the markers together with the text.
+const pendingTyping = EditorView.inputHandler.of((view, from, to, text) => {
+	if (from !== to || view.composing) return false;
+	const pending = view.state.field(pendingField, false);
+	const p = view.plugin(liveReadPlugin);
+	if (!pending?.length || !p || singleCursor(view) !== from) return false;
+	const edit = planPendingInput({
+		pos: from,
+		text,
+		pending,
+		pairs: p.pairs,
+		hidden: p.hidden,
+		slice: (a, b) => view.state.sliceDoc(a, b),
+	});
+	view.dispatch({
+		changes: { from: edit.from, insert: edit.insert },
+		selection: { anchor: edit.cursor },
+		userEvent: 'input.type',
+		scrollIntoView: true,
+	});
+	return true;
+});
+
+/**
+ * Runs a style toggle (Ctrl+B and friends) the Live Read way. With no
+ * selection it turns the style on or off for the next typed text. Returns
+ * false when Obsidian's own command should run instead: Live Read is off,
+ * the editor is not in Live Preview, or there is a selection.
+ */
+export function toggleStyleAtCursor(view: EditorView, kind: Kind): boolean {
+	const pending = view.state.field(pendingField, false);
+	if (!pending || !isLivePreview(view.state) || singleCursor(view) === null) return false;
+	view.dispatch({ effects: setPending.of(togglePending(pending, kind)) });
+	return true;
+}
+
 export function liveReadExtension(): Extension[] {
 	return [
 		liveReadPlugin,
+		pendingField,
 		EditorView.atomicRanges.of((view) => view.plugin(liveReadPlugin)?.decorations ?? Decoration.none),
 		Prec.highest(editKeys),
+		Prec.highest(pendingTyping),
 		Prec.high(edgeTyping),
 	];
 }

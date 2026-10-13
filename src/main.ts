@@ -1,6 +1,8 @@
 import { Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { Notice, Plugin } from 'obsidian';
-import { liveReadExtension } from './extension';
+import { wrapStyleCommands } from './command-wrap';
+import { liveReadExtension, toggleStyleAtCursor } from './extension';
 import { DEFAULT_SETTINGS, LiveReadSettings } from './settings';
 
 export default class LiveReadPlugin extends Plugin {
@@ -30,6 +32,16 @@ export default class LiveReadPlugin extends Plugin {
 		);
 
 		this.applyState();
+
+		// Ctrl+B, Ctrl+I and the other style toggles: Live Read behavior with
+		// no selection, Obsidian's own behavior otherwise.
+		this.register(
+			wrapStyleCommands(this.app, (editor, kind) => {
+				if (!this.settings.enabled) return false;
+				const view = (editor as { cm?: unknown } | null)?.cm;
+				return view instanceof EditorView && toggleStyleAtCursor(view, kind);
+			}),
+		);
 	}
 
 	async setEnabled(enabled: boolean) {

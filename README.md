@@ -29,6 +29,27 @@ It only has an effect in Live Preview, not in Source mode or Reading view.
 - Backspace and Delete next to a hidden marker delete the nearby letter, not
   the marker. Deleting the last letter of a span also removes its markers.
 
+## Style toggles (Ctrl+B, Ctrl+I, ...)
+
+While Live Read is on, Obsidian's own toggle commands for bold (Ctrl+B),
+italic (Ctrl+I), strikethrough, highlight and inline code work like Notion:
+
+- With text selected: Obsidian wraps or unwraps the selection, as usual.
+- With no selection: press once and the next letters you type get the style.
+  Press again to stop. Nothing is written to the file until you type, and
+  moving the cursor first cancels it.
+- Inside a styled span: pressing the toggle closes the span at the cursor,
+  so the next letters are plain.
+
+Strikethrough, highlight and code have no default hotkey in Obsidian; bind
+them in Settings > Hotkeys if you want. When Live Read is off, or outside Live
+Preview, the commands behave exactly as Obsidian's defaults.
+
+The plugin does this by wrapping Obsidian's built-in commands
+(`editor:toggle-bold` and the others) while it is loaded, because Obsidian
+handles Ctrl+B before any plugin hotkey or editor keymap can. This relies on
+`app.commands`, which is not public API. Unloading the plugin restores them.
+
 Not covered yet: headings, lists, quotes, links, code blocks, math, callouts.
 A style that spans more than one line keeps its markers visible.
 
