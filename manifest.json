@@ -4,6 +4,6 @@
 	"version": "0.1.0",
 	"minAppVersion": "1.5.0",
 	"description": "Live Preview that keeps inline markdown markers hidden, even under the cursor.",
-	"author": "lucasviana",
+	"author": "Lucas Viana",
 	"isDesktopOnly": true
 }
