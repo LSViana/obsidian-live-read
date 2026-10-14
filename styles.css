@@ -1,0 +1,9 @@
+/* While Live Read is on, Live Read draws its own code block label (click to
+   change the language), so Obsidian's label is hidden to avoid two. */
+.markdown-source-view.mod-cm6 .live-read .code-block-flair:not(.live-read-lang) {
+	display: none;
+}
+
+.markdown-source-view.mod-cm6 .live-read .code-block-flair.live-read-lang {
+	cursor: pointer;
+}

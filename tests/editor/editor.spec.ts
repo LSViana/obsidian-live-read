@@ -11,6 +11,7 @@ import { EditorSelection, EditorState } from '@codemirror/state';
 import { EditorView, keymap, runScopeHandlers } from '@codemirror/view';
 import { defaultKeymap } from '@codemirror/commands';
 import {
+	type LiveReadOptions,
 	applyLinkEdit,
 	linkContext,
 	liveReadExtension,
@@ -34,6 +35,8 @@ interface Styles {
 	lead: boolean;
 	afterList: boolean;
 	quotes: number;
+	/** Inside a fenced code block: its fence character, kept across lines. */
+	fence: string | null;
 }
 
 const fresh = (): Styles => ({
@@ -50,6 +53,7 @@ const fresh = (): Styles => ({
 	lead: true,
 	afterList: false,
 	quotes: 0,
+	fence: null,
 });
 
 function styleNames(s: Styles): string[] {
@@ -211,12 +215,34 @@ const markdownLike = StreamLanguage.define<Styles>({
 			'inline-code',
 			...LINK_CLASSES,
 			...BLOCK_CLASSES,
+			'formatting-code-block',
+			'hmd-codeblock',
 		].map((name) => [name, tags.content]),
 	),
 	startState: fresh,
 	copyState: (s) => ({ ...s }),
 	token(stream, s) {
-		if (stream.sol()) Object.assign(s, fresh());
+		if (stream.sol()) {
+			const fence = s.fence;
+			Object.assign(s, fresh());
+			s.fence = fence;
+			// Code blocks, with Obsidian's classes: fence lines and code lines.
+			const line = stream.string;
+			if (s.fence) {
+				stream.skipToEnd();
+				if (new RegExp(`^ {0,3}${s.fence === '`' ? '`' : '~'}{3,}\\s*$`).test(line)) {
+					s.fence = null;
+					return 'formatting formatting-code-block hmd-codeblock';
+				}
+				return 'hmd-codeblock';
+			}
+			const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+			if (open) {
+				s.fence = open[1]![0]!;
+				stream.skipToEnd();
+				return 'formatting formatting-code-block hmd-codeblock';
+			}
+		}
 		if (s.lead) {
 			const block = blockToken(stream, s);
 			if (block !== undefined) return block;
@@ -255,7 +281,7 @@ const markdownLike = StreamLanguage.define<Styles>({
 		return join(...styleNames(s), s.link === 'mdText' && 'link', s.link === 'mdText' && s.image && 'image') || null;
 	},
 });
-function makeView(doc: string, cursor = 0, liveRead = true): EditorView {
+function makeView(doc: string, cursor = 0, liveRead = true, options: LiveReadOptions = {}): EditorView {
 	return new EditorView({
 		state: EditorState.create({
 			doc,
@@ -265,7 +291,7 @@ function makeView(doc: string, cursor = 0, liveRead = true): EditorView {
 				// Draw tokens in their own elements, as Obsidian does.
 				syntaxHighlighting(HighlightStyle.define([{ tag: tags.content, class: 'tok' }])),
 				editorLivePreviewField,
-				liveRead ? liveReadExtension() : [],
+				liveRead ? liveReadExtension(options) : [],
 				keymap.of(defaultKeymap),
 			],
 		}),
@@ -902,5 +928,124 @@ test('bold at the start of a list item: Backspace removes the bullet, not the st
 	const view = makeView('- **b**', 4);
 	press(view, 'Backspace');
 	assert.equal(doc(view), '**b**');
+	view.destroy();
+});
+
+// Code blocks (step 8).
+
+const CODE_DOC = 'a\n```js\ncode\n```\nb';
+
+test('fence lines are hidden, even with the cursor inside the block', () => {
+	const view = makeView(CODE_DOC, 10);
+	assert.equal(view.contentDOM.textContent?.includes('```'), false);
+	assert.ok(view.state.doc.toString().includes('```js'));
+	view.destroy();
+});
+
+test('a language label shows at the top of the block', () => {
+	const view = makeView(CODE_DOC, 10);
+	const label = view.contentDOM.querySelector('.code-block-flair.live-read-lang');
+	assert.equal(label?.textContent, 'js');
+	view.destroy();
+	const plain = makeView('```\nx\n```', 4);
+	assert.equal(plain.contentDOM.querySelector('.live-read-lang')?.textContent, 'plain text');
+	plain.destroy();
+});
+
+test('clicking the label changes the language', () => {
+	let asked = '';
+	const view = makeView(CODE_DOC, 10, true, {
+		pickLanguage: (current, apply) => {
+			asked = current;
+			apply('python');
+		},
+	});
+	const label = view.contentDOM.querySelector('.live-read-lang') as HTMLElement;
+	label.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	assert.equal(asked, 'js');
+	assert.equal(doc(view), 'a\n```python\ncode\n```\nb');
+	assert.equal(view.contentDOM.querySelector('.live-read-lang')?.textContent, 'python');
+	view.destroy();
+});
+
+test('~~~ fences behave the same', () => {
+	const view = makeView('~~~sql\nselect 1\n~~~', 8);
+	assert.equal(view.contentDOM.textContent?.includes('~~~'), false);
+	assert.equal(view.contentDOM.querySelector('.live-read-lang')?.textContent, 'sql');
+	view.destroy();
+});
+
+test('a block still being written keeps its fences visible', () => {
+	const view = makeView('```js\ncode', 8);
+	assert.ok(view.contentDOM.textContent?.includes('```js'));
+	view.destroy();
+});
+
+test('typing ``` on an empty line makes a block with the cursor inside', () => {
+	const view = makeView('a\n``', 4);
+	type(view, '`');
+	assert.equal(doc(view), 'a\n```\n\n```');
+	assert.equal(cursor(view), 6);
+	type(view, 'x');
+	assert.equal(doc(view), 'a\n```\nx\n```');
+	view.destroy();
+});
+
+test('typing ``` to close a block written by hand closes it', () => {
+	const view = makeView('```js\ncode\n``', 13);
+	type(view, '`');
+	assert.equal(doc(view), '```js\ncode\n```');
+	view.destroy();
+});
+
+test('Backspace in an empty block removes the whole block', () => {
+	const view = makeView('a\n```\n\n```\nb', 6);
+	press(view, 'Backspace');
+	assert.equal(doc(view), 'a\n\nb');
+	assert.equal(cursor(view), 2);
+	view.destroy();
+});
+
+test('Backspace at the start of the code does not join it into the fence', () => {
+	const view = makeView(CODE_DOC, 8);
+	press(view, 'Backspace');
+	assert.equal(doc(view), CODE_DOC);
+	view.destroy();
+});
+
+test('arrow keys go in and out of the code without stopping on fences', () => {
+	const view = makeView(CODE_DOC, 1);
+	press(view, 'ArrowRight');
+	assert.equal(cursor(view), 8);
+	press(view, 'ArrowLeft');
+	assert.equal(cursor(view), 1);
+	view.dispatch({ selection: { anchor: 12 } });
+	press(view, 'ArrowRight');
+	assert.equal(cursor(view), 17);
+	press(view, 'ArrowLeft');
+	assert.equal(cursor(view), 12);
+	view.destroy();
+});
+
+test('typing on a hidden fence line goes into the code', () => {
+	const view = makeView(CODE_DOC, 2);
+	type(view, 'x');
+	assert.equal(doc(view), 'a\n```js\nxcode\n```\nb');
+	view.destroy();
+});
+
+test('code is edited as usual', () => {
+	const view = makeView(CODE_DOC, 10);
+	type(view, '*');
+	press(view, 'Backspace');
+	press(view, 'Backspace');
+	assert.equal(doc(view), 'a\n```js\ncde\n```\nb');
+	view.destroy();
+});
+
+test('with Live Read off, code blocks are left alone', () => {
+	const view = makeView(CODE_DOC, 10, false);
+	assert.ok(view.contentDOM.textContent?.includes('```js'));
+	assert.equal(view.contentDOM.querySelector('.live-read-lang'), null);
 	view.destroy();
 });

@@ -3,6 +3,7 @@ import {
 	EditorSelection,
 	EditorState,
 	Extension,
+	Facet,
 	Prec,
 	StateEffect,
 	StateField,
@@ -44,6 +45,18 @@ import {
 	planLinkEdit,
 } from './links';
 import { type Block, isBlockToken, parseBlock } from './blocks';
+import {
+	type FenceBlock,
+	fenceBackspace,
+	fenceDelete,
+	fenceTypingPos,
+	languageOf,
+	onFenceLine,
+	parseFences,
+	planFenceCreate,
+	planLanguage,
+	skipFence,
+} from './fences';
 import {
 	type Deferred,
 	isSpace,
@@ -213,6 +226,9 @@ class LiveReadView {
 	links: LinkSpan[] = [];
 	linkEnds: Range[] = [];
 	blocks: Block[] = [];
+	/** Closed code blocks in the whole note. */
+	fences: FenceBlock[] = [];
+	private fenceDoc: EditorState['doc'] | null = null;
 	/** Ranges where typed text always goes after the range (see insertPosition). */
 	typeAfter: Range[] = [];
 
@@ -222,7 +238,7 @@ class LiveReadView {
 
 	/** True when there is anything for the editing helpers to handle. */
 	get active() {
-		return this.hidden.length > 0 || this.blocks.length > 0;
+		return this.hidden.length > 0 || this.blocks.length > 0 || this.fences.length > 0;
 	}
 
 	update(update: ViewUpdate) {
@@ -246,6 +262,15 @@ class LiveReadView {
 			.map((l) => (inCallout(state, l.from, callouts) ? null : parseBlock(l.from, l.text, l.tokens)))
 			.filter((b): b is Block => b !== null)
 			.sort((a, b) => a.from - b.from);
+		if (!live) {
+			this.fences = [];
+			this.fenceDoc = null;
+		} else if (state.doc !== this.fenceDoc) {
+			this.fences = parseFences(docLines(state.doc));
+			this.fenceDoc = state.doc;
+		}
+		const { from: vFrom, to: vTo } = view.viewport;
+		const shownFences = this.fences.filter((f) => f.close.to >= vFrom && f.open.from <= vTo);
 
 		this.pairs = result.pairs;
 		this.links = result.links;
@@ -257,14 +282,88 @@ class LiveReadView {
 			[
 				...result.hidden.map((r) => hideMarker.range(r.from, r.to)),
 				...blocks.flatMap((b) => blockDecorations(b)),
+				...shownFences.flatMap((f) => fenceDecorations(f, state)),
 			],
 			true,
 		);
 		this.atomic = Decoration.set(
-			mergeRanges([...result.hidden, ...blocks]).map((r) => atomicMark.range(r.from, r.to)),
+			mergeRanges([...result.hidden, ...blocks, ...shownFences.flatMap((f) => [f.open, f.close])])
+				.filter((r) => r.to > r.from)
+				.map((r) => atomicMark.range(r.from, r.to)),
 			true,
 		);
 	}
+}
+
+/** The note's lines with their start offsets, for the fence parser. */
+function* docLines(doc: EditorState['doc']) {
+	let from = 0;
+	for (const text of doc.iterLines()) {
+		yield { from, text };
+		from += text.length + 1;
+	}
+}
+
+/** Lets the plugin open its language popup from the code block label. */
+type LanguagePicker = (current: string, apply: (lang: string) => void) => void;
+
+const languagePicker = Facet.define<LanguagePicker, LanguagePicker | null>({
+	combine: (values) => values[0] ?? null,
+});
+
+class LanguageLabel extends WidgetType {
+	constructor(readonly lang: string) {
+		super();
+	}
+	eq(other: LanguageLabel) {
+		return other.lang === this.lang;
+	}
+	toDOM(view: EditorView) {
+		// Same class as Obsidian's label, so it sits in the same corner.
+		const span = document.createElement('span');
+		span.className = 'code-block-flair live-read-lang';
+		span.textContent = this.lang || 'plain text';
+		span.setAttribute('aria-label', 'Change language');
+		span.addEventListener('mousedown', (e) => e.preventDefault());
+		span.addEventListener('click', (e) => {
+			e.preventDefault();
+			editLanguage(view, span);
+		});
+		return span;
+	}
+}
+
+/** Opens the language popup for the block whose label is `el`. */
+function editLanguage(view: EditorView, el: HTMLElement) {
+	const pick = view.state.facet(languagePicker);
+	const p = view.plugin(liveReadPlugin);
+	if (!pick || !p) return;
+	let pos: number;
+	try {
+		pos = view.posAtDOM(el);
+	} catch {
+		return;
+	}
+	const block = p.fences.find((f) => f.open.to === pos);
+	if (!block) return;
+	const current = languageOf(block, (a, b) => view.state.sliceDoc(a, b));
+	pick(current, (lang) => {
+		// The note may have changed while the popup was open.
+		const now = view.plugin(liveReadPlugin)?.fences.find((f) => f.open.from === block.open.from);
+		if (!now) return;
+		const edit = planLanguage(now, lang);
+		view.dispatch({ changes: { from: edit.from, to: edit.to, insert: edit.insert }, userEvent: 'input' });
+	});
+}
+
+/** Hides both fence lines and shows the language label, like Obsidian off the cursor. */
+function fenceDecorations(block: FenceBlock, state: EditorState): CMRange<Decoration>[] {
+	const lang = languageOf(block, (a, b) => state.sliceDoc(a, b));
+	return [
+		hideBlock.range(block.open.from, block.open.to),
+		Decoration.widget({ widget: new LanguageLabel(lang), side: 1 }).range(block.open.to),
+		hideBlock.range(block.close.from, block.close.to),
+	];
 }
 
 const liveReadPlugin = ViewPlugin.fromClass(LiveReadView, {
@@ -310,7 +409,13 @@ function arrow(forward: boolean) {
 		const start = skipHiddenEdge(pos, p.hidden, forward);
 		const moved = view.moveByChar(EditorSelection.cursor(start), forward).head;
 		if (moved === start) return false;
-		const target = skipBlock(skipHiddenEdge(moved, p.hidden, moved > start), p.blocks, moved > start);
+		const dir = moved > start;
+		const target = skipFence(
+			skipBlock(skipHiddenEdge(moved, p.hidden, dir), p.blocks, dir),
+			p.fences,
+			dir,
+			view.state.doc.length,
+		);
 		view.dispatch({
 			selection: { anchor: target },
 			userEvent: 'select',
@@ -320,15 +425,57 @@ function arrow(forward: boolean) {
 	};
 }
 
+/**
+ * Up/Down: when the normal move would land on a hidden fence line, keep
+ * going one more line so the cursor goes straight into or out of the code.
+ */
+function vertical(forward: boolean) {
+	return (view: EditorView): boolean => {
+		const p = view.plugin(liveReadPlugin);
+		if (!p || !p.fences.length || singleCursor(view) === null) return false;
+		let range;
+		try {
+			range = view.moveVertically(view.state.selection.main, forward);
+			if (!onFenceLine(range.head, p.fences)) return false;
+			for (let i = 0; i < 3 && onFenceLine(range.head, p.fences); i++) {
+				const next = view.moveVertically(range, forward);
+				if (next.head === range.head) break;
+				range = next;
+			}
+		} catch {
+			return false;
+		}
+		if (onFenceLine(range.head, p.fences)) {
+			range = EditorSelection.cursor(skipFence(range.head, p.fences, forward, view.state.doc.length));
+		}
+		view.dispatch({ selection: EditorSelection.create([range]), userEvent: 'select', scrollIntoView: true });
+		return true;
+	};
+}
+
 const editKeys = keymap.of([
 	{ key: 'ArrowLeft', run: arrow(false) },
 	{ key: 'ArrowRight', run: arrow(true) },
+	{ key: 'ArrowUp', run: vertical(false) },
+	{ key: 'ArrowDown', run: vertical(true) },
 	{
 		key: 'Backspace',
 		run: (view) => {
 			const p = view.plugin(liveReadPlugin);
 			const pos = singleCursor(view);
 			if (!p || pos === null || !p.active) return false;
+			const fence = fenceBackspace(pos, p.fences);
+			if (fence) {
+				if (fence.from < fence.to) {
+					view.dispatch({
+						changes: { from: fence.from, to: fence.to },
+						selection: { anchor: fence.cursor },
+						userEvent: 'delete.backward',
+						scrollIntoView: true,
+					});
+				}
+				return true;
+			}
 			const del = backspaceRange(pos, p.hidden, p.pairs, (x) => prevBreak(view.state, x), p.blocks);
 			return applyDelete(view, del, 'delete.backward');
 		},
@@ -339,6 +486,7 @@ const editKeys = keymap.of([
 			const p = view.plugin(liveReadPlugin);
 			const pos = singleCursor(view);
 			if (!p || pos === null || !p.active) return false;
+			if (fenceDelete(pos, p.fences)) return true;
 			const del = deleteForwardRange(
 				pos,
 				p.hidden,
@@ -396,6 +544,41 @@ const deferredField = StateField.define<Deferred | null>({
 		if (tr.docChanged || (tr.selection && !tr.selection.eq(tr.startState.selection))) return null;
 		return value;
 	},
+});
+
+// Code blocks: typing ``` on an empty line makes a block, and text typed on
+// a hidden fence line goes into the code instead.
+const fenceTyping = EditorView.inputHandler.of((view, from, to, text) => {
+	if (from !== to || view.composing || singleCursor(view) !== from) return false;
+	const p = view.plugin(liveReadPlugin);
+	if (!p || !isLivePreview(view.state)) return false;
+	const { doc } = view.state;
+	const line = doc.lineAt(from);
+	const before = function* () {
+		for (let n = 1; n < line.number; n++) {
+			const l = doc.line(n);
+			yield { from: l.from, text: l.text };
+		}
+	};
+	const create = planFenceCreate({ from: line.from, text: line.text }, from - line.from, text, before());
+	if (create) {
+		view.dispatch({
+			changes: { from: create.from, to: create.to, insert: create.insert },
+			selection: { anchor: create.cursor },
+			userEvent: 'input.type',
+			scrollIntoView: true,
+		});
+		return true;
+	}
+	if (!onFenceLine(from, p.fences)) return false;
+	const at = fenceTypingPos(from, p.fences);
+	view.dispatch({
+		changes: { from: at, insert: text },
+		selection: { anchor: at + text.length },
+		userEvent: 'input.type',
+		scrollIntoView: true,
+	});
+	return true;
 });
 
 // Typing with pending styles writes the markers together with the text.
@@ -549,14 +732,23 @@ const linkClicks = EditorView.domEventHandlers({
 	},
 });
 
-export function liveReadExtension(): Extension[] {
+export interface LiveReadOptions {
+	/** Opens a popup to change a code block's language (the label click). */
+	pickLanguage?: LanguagePicker;
+}
+
+export function liveReadExtension(options: LiveReadOptions = {}): Extension[] {
 	return [
 		liveReadPlugin,
 		pendingField,
 		deferredField,
 		linkClicks,
+		options.pickLanguage ? languagePicker.of(options.pickLanguage) : [],
+		// Lets styles.css hide Obsidian's own code block label while Live Read is on.
+		EditorView.editorAttributes.of({ class: 'live-read' }),
 		EditorView.atomicRanges.of((view) => view.plugin(liveReadPlugin)?.atomic ?? Decoration.none),
 		Prec.highest(editKeys),
+		Prec.highest(fenceTyping),
 		Prec.highest(styledTyping),
 		Prec.high(edgeTyping),
 	];

@@ -76,7 +76,7 @@ their text (the note name, or the alias), even under the cursor. Embeds
 - With Live Read off, Ctrl+K does what Obsidian normally does. It is wrapped
   the same way as Ctrl+B (`editor:insert-link`).
 
-Not covered yet: code blocks, math, callouts, tables.
+Not covered yet: math, callouts, tables.
 
 ## Block markers
 
@@ -96,6 +96,24 @@ raw text, even with the cursor on the line:
 - Tab and Shift+Tab indent, and Enter continues lists, as in Obsidian.
 
 Callouts, tables, code blocks and frontmatter are left to Obsidian.
+
+## Code blocks
+
+While Live Read is on, the opening (```` ```js ````) and closing fence lines of a
+code block are hidden, even with the cursor inside it. ```` ~~~ ```` fences work
+the same way.
+
+- A small label at the top of the block shows the language. Click it to
+  change the language. (While Live Read is on, this label replaces
+  Obsidian's own one, which copies the code when clicked.)
+- The arrow keys go straight into and out of the code, never stopping on a
+  hidden fence line.
+- Typing ```` ``` ```` (or `~~~`) on an empty line makes a block with the cursor
+  inside. If a fence above is still open, it closes that block instead.
+- Backspace in an empty block removes the whole block. At the start of the
+  code it does nothing, instead of joining the code into the hidden fence.
+- The code itself is shown and edited as usual. A block still being written
+  (no closing fence yet) keeps its fences visible.
 A style that spans more than one line keeps its markers visible.
 
 ## Build
