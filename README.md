@@ -68,6 +68,11 @@ their text (the note name, or the alias), even under the cursor. Embeds
   and the target. With a selection and no link under the cursor, the popup
   creates a link: a web address makes `[text](url)`, a note name makes
   `[[note|text]]`. Leaving the target empty removes the link and keeps the text.
+- While you type in "Link to", the popup lists matching notes, by name and by
+  alias, matched the same way as the quick switcher. Pick one with the arrow
+  keys and Enter, or with a click. Picking a note always makes a wikilink;
+  picking an alias makes `[[note|alias]]`. Picking fills "Text" only if it is
+  empty or still holds a value the popup filled in, so your own words stay.
 - With Live Read off, Ctrl+K does what Obsidian normally does. It is wrapped
   the same way as Ctrl+B (`editor:insert-link`).
 

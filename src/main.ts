@@ -72,9 +72,14 @@ export default class LiveReadPlugin extends Plugin {
 		if (checking) return true;
 		new LinkModal(
 			this.app,
-			{ editing: ctx.link !== null, text: ctx.text, target: ctx.target },
-			(text, target) => {
-				if (!applyLinkEdit(view, ctx, text, target)) view.focus();
+			{
+				editing: ctx.link !== null,
+				text: ctx.text,
+				target: ctx.target,
+				sourcePath: this.app.workspace.getActiveFile()?.path ?? '',
+			},
+			(text, target, kind) => {
+				if (!applyLinkEdit(view, ctx, text, target, kind)) view.focus();
 			},
 			() => view.focus(),
 		).open();

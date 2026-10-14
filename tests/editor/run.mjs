@@ -1,24 +1,34 @@
-// Bundles the editor test with esbuild (so src/ imports and the obsidian
-// stand-in resolve), then runs it with Node's test runner.
+// Bundles the editor and popup tests with esbuild (so src/ imports and the
+// obsidian stand-ins resolve), then runs them with Node's test runner.
 import esbuild from 'esbuild';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const outfile = path.join(here, '..', '..', '.test-build', 'editor.test.cjs');
+const outDir = path.join(here, '..', '..', '.test-build');
 
-await esbuild.build({
-	entryPoints: [path.join(here, 'editor.spec.ts')],
-	bundle: true,
-	platform: 'node',
-	format: 'cjs',
-	target: 'node18',
-	outfile,
-	alias: { obsidian: path.join(here, 'obsidian-mock.ts') },
-	external: ['jsdom'],
-	logLevel: 'warning',
-});
+const suites = [
+	{ entry: 'editor.spec.ts', mock: 'obsidian-mock.ts', out: 'editor.test.cjs' },
+	{ entry: 'modal.spec.ts', mock: 'obsidian-modal-mock.ts', out: 'modal.test.cjs' },
+];
 
-const result = spawnSync(process.execPath, ['--test', outfile], { stdio: 'inherit' });
+const outfiles = [];
+for (const suite of suites) {
+	const outfile = path.join(outDir, suite.out);
+	await esbuild.build({
+		entryPoints: [path.join(here, suite.entry)],
+		bundle: true,
+		platform: 'node',
+		format: 'cjs',
+		target: 'node18',
+		outfile,
+		alias: { obsidian: path.join(here, suite.mock) },
+		external: ['jsdom'],
+		logLevel: 'warning',
+	});
+	outfiles.push(outfile);
+}
+
+const result = spawnSync(process.execPath, ['--test', ...outfiles], { stdio: 'inherit' });
 process.exit(result.status ?? 1);

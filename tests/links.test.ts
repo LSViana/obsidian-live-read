@@ -236,3 +236,10 @@ test('creating a link picks markdown for URLs and wiki for note names', () => {
 	});
 	assert.equal(planLinkEdit(null, { from: 2, to: 2 }, 'x', ''), null);
 });
+
+test('a picked note forces a wikilink, also when editing a markdown link', () => {
+	const [md] = parseLinks(MD);
+	assert.equal(planLinkEdit(md!, { from: 0, to: 19 }, 'text', 'Card 7', 'wiki')?.insert, '[[Card 7|text]]');
+	assert.equal(planLinkEdit(null, { from: 0, to: 0 }, 'Card 7', 'Card 7', 'wiki')?.insert, '[[Card 7]]');
+	assert.equal(planLinkEdit(null, { from: 0, to: 0 }, 'Roadmap', 'Project plan', 'wiki')?.insert, '[[Project plan|Roadmap]]');
+});

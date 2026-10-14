@@ -504,8 +504,14 @@ export function linkContext(view: EditorView): LinkContext | null {
 }
 
 /** Writes the popup result. Returns false when nothing changed. */
-export function applyLinkEdit(view: EditorView, ctx: LinkContext, text: string, target: string): boolean {
-	const edit = planLinkEdit(ctx.link, ctx.range, text, target);
+export function applyLinkEdit(
+	view: EditorView,
+	ctx: LinkContext,
+	text: string,
+	target: string,
+	kind?: LinkKind,
+): boolean {
+	const edit = planLinkEdit(ctx.link, ctx.range, text, target, kind);
 	if (!edit) return false;
 	view.dispatch({
 		changes: { from: edit.from, to: edit.to, insert: edit.insert },

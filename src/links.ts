@@ -180,13 +180,15 @@ export function planLinkEdit(
 	range: Range,
 	text: string,
 	target: string,
+	/** Forces the kind, e.g. a wikilink when a note was picked from the list. */
+	kind?: LinkKind,
 ): LinkEdit | null {
 	const goal = target.trim();
 	if (existing) {
-		const insert = goal ? buildLink(existing.kind, text, goal) : text;
+		const insert = goal ? buildLink(kind ?? existing.kind, text, goal) : text;
 		return { from: existing.from, to: existing.to, insert, cursor: existing.from + insert.length };
 	}
 	if (!goal) return null;
-	const insert = buildLink(looksLikeUrl(goal) ? 'markdown' : 'wiki', text, goal);
+	const insert = buildLink(kind ?? (looksLikeUrl(goal) ? 'markdown' : 'wiki'), text, goal);
 	return { from: range.from, to: range.to, insert, cursor: range.from + insert.length };
 }
