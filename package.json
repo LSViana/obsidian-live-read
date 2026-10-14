@@ -12,6 +12,7 @@
 		"test": "node --test tests/*.test.ts && node tests/editor/run.mjs"
 	},
 	"keywords": [],
+	"author": "Lucas Viana",
 	"license": "0-BSD",
 	"devDependencies": {
 		"@codemirror/commands": "6.10.0",
