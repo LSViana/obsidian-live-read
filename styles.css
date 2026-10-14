@@ -7,3 +7,96 @@
 .markdown-source-view.mod-cm6 .live-read .code-block-flair.live-read-lang {
 	cursor: pointer;
 }
+
+/* Callouts while the cursor is inside: Obsidian's callout box, drawn line by
+   line. Each line has Obsidian's "callout" class and data-callout type, so
+   the theme's --callout-color (and icon) for that type applies. Obsidian's
+   own rules for quote lines are more specific than its .callout box rule,
+   so the box is set here explicitly, only on Live Read's own class.
+   Border and corners go on the first and last line only, and padding is
+   used instead of margins so line heights stay exact. */
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout {
+	margin: 0 !important;
+	background-color: color-mix(in oklch, var(--callout-color) 10%, transparent) !important;
+	border-style: solid !important;
+	border-color: color-mix(
+		in oklch,
+		var(--callout-color) calc(var(--callout-border-opacity) * 100%),
+		transparent
+	) !important;
+	border-width: 0 var(--callout-border-width) !important;
+	border-radius: 0 !important;
+	/* Same inner space as Obsidian's callout box (--callout-padding is
+	   12px 12px 12px 24px by default). Quote lines have a hanging indent
+	   for the ">", which would pull the text and icon out of the box. */
+	padding: 0 var(--size-4-3) 0 var(--size-4-6) !important;
+	text-indent: 0 !important;
+	overflow: visible !important;
+	mix-blend-mode: normal;
+}
+
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-first {
+	border-top-width: var(--callout-border-width) !important;
+	border-start-start-radius: var(--callout-radius) !important;
+	border-start-end-radius: var(--callout-radius) !important;
+	padding-top: var(--size-4-3) !important;
+}
+
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-last {
+	border-bottom-width: var(--callout-border-width) !important;
+	border-end-start-radius: var(--callout-radius) !important;
+	border-end-end-radius: var(--callout-radius) !important;
+	padding-bottom: var(--size-4-3) !important;
+}
+
+/* Paragraphs inside: --p-spacing above the first and below the last, and an
+   empty line between two paragraphs is exactly one --p-spacing tall, so the
+   space between paragraphs is shared, like collapsing margins. */
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-p-first {
+	padding-top: var(--p-spacing) !important;
+}
+
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-p-last {
+	padding-bottom: var(--p-spacing) !important;
+}
+
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-p-last.live-read-callout-last {
+	padding-bottom: calc(var(--p-spacing) + var(--size-4-3)) !important;
+}
+
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-gap {
+	line-height: var(--p-spacing) !important;
+}
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-title {
+	color: var(--callout-color);
+	font-weight: var(--callout-title-weight);
+}
+
+/* The plain quote bar is not needed inside a drawn callout. */
+.markdown-source-view.mod-cm6.is-live-preview .live-read .cm-line.live-read-callout.HyperMD-quote::before {
+	display: none;
+}
+
+.markdown-source-view.mod-cm6 .live-read .live-read-callout-head {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-4-1);
+	margin-inline-end: var(--size-4-1);
+	vertical-align: middle;
+}
+
+.markdown-source-view.mod-cm6 .live-read .live-read-callout-icon,
+.markdown-source-view.mod-cm6 .live-read .live-read-callout-fold {
+	display: inline-flex;
+	align-items: center;
+	vertical-align: middle;
+	cursor: pointer;
+}
+
+.markdown-source-view.mod-cm6 .live-read .live-read-callout-fold {
+	margin-inline-start: var(--size-4-1);
+}
+
+.markdown-source-view.mod-cm6 .live-read .live-read-callout-placeholder {
+	opacity: 0.6;
+}

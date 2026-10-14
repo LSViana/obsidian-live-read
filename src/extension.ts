@@ -20,13 +20,14 @@ import {
 	WidgetType,
 	keymap,
 } from '@codemirror/view';
-import { editorLivePreviewField } from 'obsidian';
+import { editorLivePreviewField, setIcon } from 'obsidian';
 import {
 	HiddenResult,
 	Kind,
 	MarkerPair,
 	Range,
 	Token,
+	type BlockRange,
 	backspaceRange,
 	computeHidden,
 	deleteForwardRange,
@@ -57,6 +58,18 @@ import {
 	planLanguage,
 	skipFence,
 } from './fences';
+import {
+	type Callout,
+	calloutBackspace,
+	calloutClickPos,
+	calloutDelete,
+	calloutIcon,
+	calloutMarkers,
+	calloutTitlePlaceholder,
+	parseCallouts,
+	planCalloutType,
+	planFoldToggle,
+} from './callouts';
 import {
 	type Deferred,
 	isSpace,
@@ -228,6 +241,10 @@ class LiveReadView {
 	blocks: Block[] = [];
 	/** Closed code blocks in the whole note. */
 	fences: FenceBlock[] = [];
+	/** Callouts in the whole note (not inside code blocks, not nested). */
+	callouts: Callout[] = [];
+	/** The hidden `> [!type] ` and `> ` parts of callout lines. */
+	calloutMarks: BlockRange[] = [];
 	private fenceDoc: EditorState['doc'] | null = null;
 	/** Ranges where typed text always goes after the range (see insertPosition). */
 	typeAfter: Range[] = [];
@@ -238,7 +255,7 @@ class LiveReadView {
 
 	/** True when there is anything for the editing helpers to handle. */
 	get active() {
-		return this.hidden.length > 0 || this.blocks.length > 0 || this.fences.length > 0;
+		return this.hidden.length > 0 || this.blocks.length > 0 || this.fences.length > 0 || this.callouts.length > 0;
 	}
 
 	update(update: ViewUpdate) {
@@ -264,30 +281,43 @@ class LiveReadView {
 			.sort((a, b) => a.from - b.from);
 		if (!live) {
 			this.fences = [];
+			this.callouts = [];
 			this.fenceDoc = null;
 		} else if (state.doc !== this.fenceDoc) {
 			this.fences = parseFences(docLines(state.doc));
+			const fences = this.fences;
+			this.callouts = parseCallouts(docLines(state.doc)).filter(
+				(c) => !fences.some((f) => f.open.from <= c.to && c.from <= f.close.to),
+			);
 			this.fenceDoc = state.doc;
 		}
+		this.calloutMarks = calloutMarkers(this.callouts);
 		const { from: vFrom, to: vTo } = view.viewport;
 		const shownFences = this.fences.filter((f) => f.close.to >= vFrom && f.open.from <= vTo);
+		const shownCallouts = this.callouts.filter((c) => c.to >= vFrom && c.from <= vTo);
 
 		this.pairs = result.pairs;
 		this.links = result.links;
 		this.linkEnds = result.linkEnds;
 		this.blocks = blocks;
-		this.typeAfter = [...result.linkEnds, ...blocks];
+		this.typeAfter = [...result.linkEnds, ...blocks, ...this.calloutMarks];
 		this.hidden = result.hidden;
 		this.decorations = Decoration.set(
 			[
 				...result.hidden.map((r) => hideMarker.range(r.from, r.to)),
 				...blocks.flatMap((b) => blockDecorations(b)),
 				...shownFences.flatMap((f) => fenceDecorations(f, state)),
+				...shownCallouts.flatMap((c) => calloutDecorations(c)),
 			],
 			true,
 		);
 		this.atomic = Decoration.set(
-			mergeRanges([...result.hidden, ...blocks, ...shownFences.flatMap((f) => [f.open, f.close])])
+			mergeRanges([
+				...result.hidden,
+				...blocks,
+				...shownFences.flatMap((f) => [f.open, f.close]),
+				...calloutMarkers(shownCallouts),
+			])
 				.filter((r) => r.to > r.from)
 				.map((r) => atomicMark.range(r.from, r.to)),
 			true,
@@ -366,6 +396,139 @@ function fenceDecorations(block: FenceBlock, state: EditorState): CMRange<Decora
 	];
 }
 
+/** Lets the plugin open its callout type menu from the callout icon. */
+type CalloutTypePicker = (current: string, apply: (type: string) => void, anchor: HTMLElement) => void;
+
+const calloutTypePicker = Facet.define<CalloutTypePicker, CalloutTypePicker | null>({
+	combine: (values) => values[0] ?? null,
+});
+
+/** Finds the callout whose header starts at the widget's position. */
+function calloutAtWidget(view: EditorView, el: HTMLElement, at: 'start' | 'end'): Callout | null {
+	const p = view.plugin(liveReadPlugin);
+	if (!p) return null;
+	let pos: number;
+	try {
+		pos = view.posAtDOM(el);
+	} catch {
+		return null;
+	}
+	return p.callouts.find((c) => (at === 'start' ? c.header.lineFrom : c.header.lineTo) === pos) ?? null;
+}
+
+/** Icon (click: change type), plus the type name when the title is empty. */
+class CalloutHead extends WidgetType {
+	constructor(
+		readonly type: string,
+		readonly emptyTitle: boolean,
+	) {
+		super();
+	}
+	eq(other: CalloutHead) {
+		return other.type === this.type && other.emptyTitle === this.emptyTitle;
+	}
+	toDOM(view: EditorView) {
+		const wrap = document.createElement('span');
+		wrap.className = 'live-read-callout-head';
+		const icon = document.createElement('span');
+		icon.className = 'callout-icon live-read-callout-icon';
+		icon.setAttribute('aria-label', 'Change callout type');
+		setIcon(icon, calloutIcon(this.type));
+		// Themes and custom types set the icon in CSS (--callout-icon).
+		window.requestAnimationFrame(() => {
+			const fromCss = window.getComputedStyle(icon).getPropertyValue('--callout-icon').trim();
+			if (fromCss && fromCss !== calloutIcon(this.type)) setIcon(icon, fromCss);
+		});
+		icon.addEventListener('mousedown', (e) => e.preventDefault());
+		icon.addEventListener('click', (e) => {
+			e.preventDefault();
+			const pick = view.state.facet(calloutTypePicker);
+			const callout = calloutAtWidget(view, wrap, 'start');
+			if (!pick || !callout) return;
+			pick(callout.type, (type) => {
+				const now = view.plugin(liveReadPlugin)?.callouts.find((c) => c.from === callout.from);
+				if (!now) return;
+				const edit = planCalloutType(now, type);
+				view.dispatch({ changes: edit, userEvent: 'input' });
+			}, icon);
+		});
+		wrap.appendChild(icon);
+		if (this.emptyTitle) {
+			const placeholder = document.createElement('span');
+			placeholder.className = 'callout-title-inner live-read-callout-placeholder';
+			placeholder.textContent = calloutTitlePlaceholder(this.type);
+			wrap.appendChild(placeholder);
+		}
+		return wrap;
+	}
+}
+
+/** The fold arrow at the end of a foldable callout's header (click: +/-). */
+class CalloutFold extends WidgetType {
+	constructor(readonly collapsed: boolean) {
+		super();
+	}
+	eq(other: CalloutFold) {
+		return other.collapsed === this.collapsed;
+	}
+	toDOM(view: EditorView) {
+		const fold = document.createElement('span');
+		fold.className = `callout-fold live-read-callout-fold${this.collapsed ? ' is-collapsed' : ''}`;
+		fold.setAttribute('aria-label', this.collapsed ? 'Folded (click to unfold)' : 'Click to fold');
+		setIcon(fold, 'lucide-chevron-down');
+		fold.addEventListener('mousedown', (e) => e.preventDefault());
+		fold.addEventListener('click', (e) => {
+			e.preventDefault();
+			const callout = calloutAtWidget(view, fold, 'end');
+			const edit = callout && planFoldToggle(callout);
+			if (edit) view.dispatch({ changes: edit, userEvent: 'input' });
+		});
+		return fold;
+	}
+}
+
+/**
+ * Draws a callout around its lines with Obsidian's classes (so themes and
+ * custom callout colors apply), hides `> [!type]` and `> `, and adds the
+ * icon and fold arrow.
+ */
+function calloutDecorations(c: Callout): CMRange<Decoration>[] {
+	const lines = [c.header, ...c.body];
+	const out: CMRange<Decoration>[] = lines.map((line, i) => {
+		// Paragraph spacing like Obsidian's (--p-spacing above and below each
+		// paragraph, shared between two paragraphs): space above the first
+		// body paragraph, below the last one, and an empty line between two
+		// paragraphs is exactly one spacing tall.
+		const b = i - 1;
+		const blank = b >= 0 && c.body[b]!.blank === true;
+		return Decoration.line({
+			class: [
+				'callout',
+				'live-read-callout',
+				i === 0 ? 'live-read-callout-first live-read-callout-title' : '',
+				i === lines.length - 1 ? 'live-read-callout-last' : '',
+				blank ? 'live-read-callout-gap' : '',
+				b === 0 && !blank ? 'live-read-callout-p-first' : '',
+				b >= 0 && b === c.body.length - 1 && !blank ? 'live-read-callout-p-last' : '',
+			]
+				.filter(Boolean)
+				.join(' '),
+			attributes: { 'data-callout': c.type.toLowerCase() },
+		}).range(line.lineFrom);
+	});
+	out.push(
+		Decoration.replace({ widget: new CalloutHead(c.type, c.title.from >= c.title.to) }).range(
+			c.header.lineFrom,
+			c.header.to,
+		),
+	);
+	if (c.fold) out.push(Decoration.widget({ widget: new CalloutFold(c.fold === '-'), side: 1 }).range(c.header.lineTo));
+	for (const line of c.body) {
+		if (line.to > line.lineFrom) out.push(hideBlock.range(line.lineFrom, line.to));
+	}
+	return out;
+}
+
 const liveReadPlugin = ViewPlugin.fromClass(LiveReadView, {
 	decorations: (v) => v.decorations,
 });
@@ -411,7 +574,7 @@ function arrow(forward: boolean) {
 		if (moved === start) return false;
 		const dir = moved > start;
 		const target = skipFence(
-			skipBlock(skipHiddenEdge(moved, p.hidden, dir), p.blocks, dir),
+			skipBlock(skipHiddenEdge(moved, p.hidden, dir), [...p.blocks, ...p.calloutMarks], dir),
 			p.fences,
 			dir,
 			view.state.doc.length,
@@ -464,7 +627,7 @@ const editKeys = keymap.of([
 			const p = view.plugin(liveReadPlugin);
 			const pos = singleCursor(view);
 			if (!p || pos === null || !p.active) return false;
-			const fence = fenceBackspace(pos, p.fences);
+			const fence = fenceBackspace(pos, p.fences) ?? calloutBackspace(pos, p.callouts);
 			if (fence) {
 				if (fence.from < fence.to) {
 					view.dispatch({
@@ -476,7 +639,7 @@ const editKeys = keymap.of([
 				}
 				return true;
 			}
-			const del = backspaceRange(pos, p.hidden, p.pairs, (x) => prevBreak(view.state, x), p.blocks);
+			const del = backspaceRange(pos, p.hidden, p.pairs, (x) => prevBreak(view.state, x), [...p.blocks, ...p.calloutMarks]);
 			return applyDelete(view, del, 'delete.backward');
 		},
 	},
@@ -486,14 +649,14 @@ const editKeys = keymap.of([
 			const p = view.plugin(liveReadPlugin);
 			const pos = singleCursor(view);
 			if (!p || pos === null || !p.active) return false;
-			if (fenceDelete(pos, p.fences)) return true;
+			if (fenceDelete(pos, p.fences) || calloutDelete(pos, p.callouts)) return true;
 			const del = deleteForwardRange(
 				pos,
 				p.hidden,
 				p.pairs,
 				view.state.doc.length,
 				(x) => nextBreak(view.state, x),
-				p.blocks,
+				[...p.blocks, ...p.calloutMarks],
 			);
 			return applyDelete(view, del, 'delete.forward');
 		},
@@ -710,6 +873,92 @@ export function applyLinkEdit(
 // link. Obsidian opens links from a click listener on an outer element, so
 // stopping the click here is enough. Ctrl/Cmd+click still reaches Obsidian,
 // which opens the link.
+/** Where in a rendered element's text the caret is, as a character count. */
+function textOffset(root: Node, node: Node, offset: number): number {
+	let count = 0;
+	const walker = root.ownerDocument!.createTreeWalker(root, 4 /* text nodes */);
+	for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+		if (n === node) return count + offset;
+		// The caret is in an element: count the text of its children before it.
+		if (node.nodeType === 1 && node.childNodes[offset]?.contains(n)) return count;
+		count += n.textContent?.length ?? 0;
+	}
+	return count;
+}
+
+/** The text node and offset under the mouse, when the browser can tell. */
+function caretAt(e: MouseEvent): { node: Node; offset: number } | null {
+	const doc = (e.target as Node | null)?.ownerDocument as
+		| (Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null })
+		| undefined;
+	const range = doc?.caretRangeFromPoint?.(e.clientX, e.clientY) as unknown as
+		| { startContainer: Node; startOffset: number }
+		| null
+		| undefined;
+	return range ? { node: range.startContainer, offset: range.startOffset } : null;
+}
+
+// Obsidian selects a whole callout when its rendered box is clicked. With
+// Live Read on, a click puts the cursor where it lands instead. These run in
+// the capture phase so they come before Obsidian's own click handling.
+const calloutClicks = ViewPlugin.fromClass(
+	class {
+		private readonly down = (e: MouseEvent) => this.handle(e, true);
+		private readonly up = (e: MouseEvent) => this.handle(e, false);
+
+		constructor(readonly view: EditorView) {
+			view.contentDOM.addEventListener('mousedown', this.down, true);
+			view.contentDOM.addEventListener('mouseup', this.up, true);
+			view.contentDOM.addEventListener('click', this.up, true);
+		}
+
+		destroy() {
+			this.view.contentDOM.removeEventListener('mousedown', this.down, true);
+			this.view.contentDOM.removeEventListener('mouseup', this.up, true);
+			this.view.contentDOM.removeEventListener('click', this.up, true);
+		}
+
+		private handle(e: MouseEvent, place: boolean) {
+			const { view } = this;
+			if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+			const target = e.target as HTMLElement | null;
+			const box = target?.closest?.('.cm-callout');
+			if (!box || !view.contentDOM.contains(box)) return;
+			// Links, checkboxes, buttons and the fold arrow keep working.
+			if (target!.closest('a, input, button, .embed-actions, .callout-fold, .interactive-child')) return;
+			const p = view.plugin(liveReadPlugin);
+			if (!p || !isLivePreview(view.state) || !p.callouts.length) return;
+			e.preventDefault();
+			e.stopPropagation();
+			if (!place) return;
+
+			let pos: number;
+			try {
+				pos = view.posAtDOM(box);
+			} catch {
+				return;
+			}
+			const callout =
+				p.callouts.find((c) => c.from <= pos && pos <= c.to) ?? p.callouts.find((c) => c.from >= pos);
+			if (!callout) return;
+			const caret = caretAt(e) ?? { node: target!, offset: 0 };
+			const title = box.querySelector('.callout-title-inner');
+			const content = box.querySelector('.callout-content');
+			const slice = (a: number, b: number) => view.state.sliceDoc(a, b);
+			let anchor: number;
+			if (title?.contains(caret.node)) {
+				anchor = calloutClickPos(callout, 'title', title.textContent ?? '', textOffset(title, caret.node, caret.offset), slice);
+			} else if (content?.contains(caret.node)) {
+				anchor = calloutClickPos(callout, 'body', content.textContent ?? '', textOffset(content, caret.node, caret.offset), slice);
+			} else {
+				anchor = callout.title.to;
+			}
+			view.focus();
+			view.dispatch({ selection: { anchor }, scrollIntoView: true, userEvent: 'select.pointer' });
+		}
+	},
+);
+
 const linkClicks = EditorView.domEventHandlers({
 	click(event, view) {
 		if (event.button !== 0 || event.ctrlKey || event.metaKey) return false;
@@ -735,6 +984,8 @@ const linkClicks = EditorView.domEventHandlers({
 export interface LiveReadOptions {
 	/** Opens a popup to change a code block's language (the label click). */
 	pickLanguage?: LanguagePicker;
+	/** Opens a menu to change a callout's type (the icon click). */
+	pickCalloutType?: CalloutTypePicker;
 }
 
 export function liveReadExtension(options: LiveReadOptions = {}): Extension[] {
@@ -743,7 +994,9 @@ export function liveReadExtension(options: LiveReadOptions = {}): Extension[] {
 		pendingField,
 		deferredField,
 		linkClicks,
+		calloutClicks,
 		options.pickLanguage ? languagePicker.of(options.pickLanguage) : [],
+		options.pickCalloutType ? calloutTypePicker.of(options.pickCalloutType) : [],
 		// Lets styles.css hide Obsidian's own code block label while Live Read is on.
 		EditorView.editorAttributes.of({ class: 'live-read' }),
 		EditorView.atomicRanges.of((view) => view.plugin(liveReadPlugin)?.atomic ?? Decoration.none),

@@ -850,10 +850,11 @@ test('bullets, numbers, checkboxes and quotes are drawn like Obsidian draws them
 	view.destroy();
 });
 
-test('callouts are left to Obsidian', () => {
+test('callout lines get no quote bar from the block marker handling', () => {
 	const view = makeView('> [!NOTE] Title\n> body', 3);
 	assert.equal(has(view, '.cm-transparent'), false);
-	assert.equal(shownText(view), '> [!NOTE] Title> body');
+	// Step 9 draws the callout itself: its markers are hidden.
+	assert.equal(shownText(view), 'Titlebody');
 	view.destroy();
 });
 
@@ -1047,5 +1048,145 @@ test('with Live Read off, code blocks are left alone', () => {
 	const view = makeView(CODE_DOC, 10, false);
 	assert.ok(view.contentDOM.textContent?.includes('```js'));
 	assert.equal(view.contentDOM.querySelector('.live-read-lang'), null);
+	view.destroy();
+});
+
+// Callouts (step 9).
+
+const lineEls = (view: EditorView) => Array.from(view.contentDOM.querySelectorAll('.cm-line')) as HTMLElement[];
+
+test('a callout is drawn with Obsidian classes, even with the cursor inside', () => {
+	const view = makeView('> [!tip] Title\n> body', 17);
+	const [head, body] = lineEls(view);
+	assert.ok(head?.classList.contains('callout') && head.classList.contains('live-read-callout-title'));
+	assert.equal(head?.getAttribute('data-callout'), 'tip');
+	assert.ok(body?.classList.contains('live-read-callout-last'));
+	assert.equal(view.contentDOM.querySelector('.live-read-callout-icon')?.getAttribute('data-icon'), 'lucide-flame');
+	// "> [!tip] " and "> " are hidden; the title and body are shown as text.
+	assert.equal(view.contentDOM.textContent, 'Titlebody');
+	view.destroy();
+});
+
+test('an empty title shows the type name', () => {
+	const view = makeView('> [!warning]\n> x', 14);
+	assert.equal(view.contentDOM.querySelector('.live-read-callout-placeholder')?.textContent, 'Warning');
+	view.destroy();
+});
+
+test('clicking the icon changes the type', () => {
+	let asked = '';
+	const view = makeView('> [!note] T\n> b', 13, true, {
+		pickCalloutType: (current, apply) => {
+			asked = current;
+			apply('warning');
+		},
+	});
+	(view.contentDOM.querySelector('.live-read-callout-icon') as HTMLElement).dispatchEvent(
+		new window.MouseEvent('click', { bubbles: true }),
+	);
+	assert.equal(asked, 'note');
+	assert.equal(doc(view), '> [!warning] T\n> b');
+	view.destroy();
+});
+
+test('the fold arrow switches - and +', () => {
+	const view = makeView('> [!note]- T\n> b', 14);
+	const fold = view.contentDOM.querySelector('.live-read-callout-fold') as HTMLElement;
+	assert.ok(fold.classList.contains('is-collapsed'));
+	fold.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	assert.equal(doc(view), '> [!note]+ T\n> b');
+	view.destroy();
+	const plain = makeView('> [!note] T\n> b', 13);
+	assert.equal(plain.contentDOM.querySelector('.live-read-callout-fold'), null);
+	plain.destroy();
+});
+
+test('typing at the start of a callout line goes after its hidden marker', () => {
+	const view = makeView('> [!note] T\n> body', 12);
+	type(view, 'X');
+	assert.equal(doc(view), '> [!note] T\n> Xbody');
+	view.destroy();
+});
+
+test('arrow keys skip the hidden markers', () => {
+	const view = makeView('> [!note] T\n> body', 11);
+	press(view, 'ArrowRight');
+	assert.equal(cursor(view), 14);
+	press(view, 'ArrowLeft');
+	assert.equal(cursor(view), 11);
+	view.destroy();
+});
+
+test('Backspace at the start of a body line joins it to the line above', () => {
+	const view = makeView('> [!note] T\n> body', 14);
+	press(view, 'Backspace');
+	assert.equal(doc(view), '> [!note] Tbody');
+	view.destroy();
+});
+
+test('Backspace at the start of an empty callout turns it into plain text', () => {
+	const view = makeView('a\n> [!note]\n> \nb', 11);
+	press(view, 'Backspace');
+	assert.equal(doc(view), 'a\n\nb');
+	view.destroy();
+});
+
+test('Backspace at the start of a non-empty title keeps the callout', () => {
+	const view = makeView('> [!note] T\n> b', 10);
+	press(view, 'Backspace');
+	assert.equal(doc(view), '> [!note] T\n> b');
+	view.destroy();
+});
+
+test('nested callouts, callouts in code blocks, and Live Read off: left alone', () => {
+	for (const [text, on] of [
+		['> [!note] A\n> > [!tip] B', true],
+		['```\n> [!note] x\n```', true],
+		['> [!note] x', false],
+	] as const) {
+		const view = makeView(text, 0, on);
+		assert.equal(view.contentDOM.querySelector('.live-read-callout'), null, text);
+		view.destroy();
+	}
+});
+
+test('clicking the rendered callout from Obsidian puts the cursor where you click', () => {
+	const view = makeView('> [!tip] My title\n> first line\n> second\n\nafter', 45);
+	// A stand-in for Obsidian's rendered callout box, at the top of the note.
+	const box = document.createElement('div');
+	box.className = 'cm-embed-block cm-callout';
+	box.innerHTML =
+		'<div class="callout"><div class="callout-title"><div class="callout-title-inner">My title</div></div>' +
+		'<div class="callout-content"><p>first line<br>second</p></div></div>';
+	view.contentDOM.insertBefore(box, view.contentDOM.firstChild);
+	let reachedObsidian = false;
+	box.addEventListener('mousedown', () => (reachedObsidian = true));
+	box.addEventListener('click', () => (reachedObsidian = true));
+
+	const title = box.querySelector('.callout-title-inner')!;
+	title.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+	title.dispatchEvent(new window.MouseEvent('click', { bubbles: true, button: 0 }));
+	// No caret info in this test browser: the start of what was clicked.
+	assert.equal(cursor(view), doc(view).indexOf('My title'));
+	assert.equal(view.state.selection.main.empty, true);
+	assert.equal(reachedObsidian, false);
+
+	const body = box.querySelector('.callout-content p')!;
+	body.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+	assert.equal(cursor(view), doc(view).indexOf('first line'));
+
+	// Ctrl+click is left to Obsidian.
+	title.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true, button: 0, ctrlKey: true }));
+	assert.equal(reachedObsidian, true);
+	box.remove();
+	view.destroy();
+});
+
+test('paragraph spacing classes: above the first, below the last, one gap between', () => {
+	const view = makeView('> [!note] T\n> one\n> still one\n> \n> two', 13);
+	const classes = lineEls(view).map((el) =>
+		['p-first', 'p-last', 'gap'].filter((k) => el.classList.contains(`live-read-callout-${k}`)).join(','),
+	);
+	assert.deepEqual(classes, ['', 'p-first', '', 'gap', 'p-last']);
 	view.destroy();
 });

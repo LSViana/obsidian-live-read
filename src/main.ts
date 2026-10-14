@@ -1,9 +1,10 @@
 import { Extension } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { Notice, Plugin } from 'obsidian';
+import { Menu, Notice, Plugin } from 'obsidian';
 import { wrapEditorCommands, wrapStyleCommands } from './command-wrap';
 import { applyLinkEdit, linkContext, liveReadExtension, toggleStyleAtCursor } from './extension';
 import { LanguageModal } from './language-modal';
+import { CALLOUT_TYPES, calloutIcon, calloutTitlePlaceholder } from './callouts';
 import { LinkModal } from './link-modal';
 import { DEFAULT_SETTINGS, LiveReadSettings } from './settings';
 
@@ -106,6 +107,20 @@ export default class LiveReadPlugin extends Plugin {
 	private buildExtensions(): Extension[] {
 		return liveReadExtension({
 			pickLanguage: (current, apply) => new LanguageModal(this.app, current, apply).open(),
+			pickCalloutType: (current, apply, anchor) => {
+				const menu = new Menu();
+				for (const type of CALLOUT_TYPES) {
+					menu.addItem((item) =>
+						item
+							.setTitle(calloutTitlePlaceholder(type))
+							.setIcon(calloutIcon(type))
+							.setChecked(type === current.toLowerCase())
+							.onClick(() => apply(type)),
+					);
+				}
+				const rect = anchor.getBoundingClientRect();
+				menu.showAtPosition({ x: rect.left, y: rect.bottom });
+			},
 		});
 	}
 

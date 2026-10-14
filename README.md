@@ -76,7 +76,7 @@ their text (the note name, or the alias), even under the cursor. Embeds
 - With Live Read off, Ctrl+K does what Obsidian normally does. It is wrapped
   the same way as Ctrl+B (`editor:insert-link`).
 
-Not covered yet: math, callouts, tables.
+Not covered yet: math, tables, nested callouts.
 
 ## Block markers
 
@@ -95,7 +95,8 @@ raw text, even with the cursor on the line:
   its marker.
 - Tab and Shift+Tab indent, and Enter continues lists, as in Obsidian.
 
-Callouts, tables, code blocks and frontmatter are left to Obsidian.
+Tables and frontmatter are left to Obsidian. Code blocks and callouts have
+their own sections below.
 
 ## Code blocks
 
@@ -114,6 +115,23 @@ the same way.
   code it does nothing, instead of joining the code into the hidden fence.
 - The code itself is shown and edited as usual. A block still being written
   (no closing fence yet) keeps its fences visible.
+
+## Callouts
+
+While Live Read is on, a callout (`> [!note] Title`) keeps its box, icon and
+title even with the cursor inside it, and `> [!type]` and the `> ` at the
+start of each line stay hidden. The box uses Obsidian's own callout classes,
+so theme colors and custom callout types apply.
+
+- Edit the title and the body in place.
+- Click the icon to pick another type (note, tip, warning, ...).
+- For foldable callouts (`[!note]-` or `[!note]+`), click the arrow to switch
+  between folded and open. Obsidian folds it when the cursor leaves.
+- Make one with Obsidian's "Insert callout" command or by typing
+  `> [!note]`. Backspace at the start of an empty callout turns it into
+  plain text. Backspace at the start of a body line joins it to the line
+  above.
+- Callouts with another quote or callout inside are left to Obsidian.
 A style that spans more than one line keeps its markers visible.
 
 ## Build
