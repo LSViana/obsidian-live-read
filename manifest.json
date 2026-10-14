@@ -2,7 +2,7 @@
 	"id": "live-read",
 	"name": "Live Read",
 	"version": "0.1.0",
-	"minAppVersion": "1.5.0",
+	"minAppVersion": "1.5.7",
 	"description": "Live Preview that keeps inline markdown markers hidden, even under the cursor.",
 	"author": "Lucas Viana",
 	"authorUrl": "https://github.com/LSViana",
