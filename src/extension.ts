@@ -6,6 +6,7 @@ import {
 	Prec,
 	StateEffect,
 	StateField,
+	type Range as CMRange,
 	TransactionSpec,
 	findClusterBreak,
 } from '@codemirror/state';
@@ -15,6 +16,7 @@ import {
 	EditorView,
 	ViewPlugin,
 	ViewUpdate,
+	WidgetType,
 	keymap,
 } from '@codemirror/view';
 import { editorLivePreviewField } from 'obsidian';
@@ -29,7 +31,8 @@ import {
 	deleteForwardRange,
 	insertPosition,
 	markerKinds,
-	sameRanges,
+	mergeRanges,
+	skipBlock,
 	skipHiddenEdge,
 } from './hidden-ranges';
 import {
@@ -40,6 +43,7 @@ import {
 	linkAt,
 	planLinkEdit,
 } from './links';
+import { type Block, isBlockToken, parseBlock } from './blocks';
 import {
 	type Deferred,
 	isSpace,
@@ -55,25 +59,32 @@ function isLivePreview(state: EditorState): boolean {
 	return state.field(editorLivePreviewField, false) === true;
 }
 
-/** Marker and link tokens of the visible lines, grouped by line. */
-function collectLines(view: EditorView): Token[][] {
+interface LineTokens {
+	from: number;
+	text: string;
+	tokens: Token[];
+}
+
+/** Marker, link and block tokens of the visible lines, grouped by line. */
+function collectLines(view: EditorView): LineTokens[] {
 	const { state } = view;
-	const byLine = new Map<number, Token[]>();
+	const byLine = new Map<number, LineTokens>();
 	const tree = syntaxTree(state);
 	for (const { from, to } of view.visibleRanges) {
 		tree.iterate({
 			from,
 			to,
 			enter: (node) => {
-				if (markerKinds(node.name).length === 0 && !isLinkToken(node.name)) return;
-				const line = state.doc.lineAt(node.from).number;
-				let tokens = byLine.get(line);
-				if (!tokens) {
-					tokens = [];
-					byLine.set(line, tokens);
+				const name = node.name;
+				if (markerKinds(name).length === 0 && !isLinkToken(name) && !isBlockToken(name)) return;
+				const line = state.doc.lineAt(node.from);
+				let entry = byLine.get(line.number);
+				if (!entry) {
+					entry = { from: line.from, text: line.text, tokens: [] };
+					byLine.set(line.number, entry);
 				}
-				if (!tokens.some((t) => t.from === node.from && t.to === node.to)) {
-					tokens.push({ from: node.from, to: node.to, name: node.name });
+				if (!entry.tokens.some((t) => t.from === node.from && t.to === node.to)) {
+					entry.tokens.push({ from: node.from, to: node.to, name });
 				}
 			},
 		});
@@ -81,15 +92,137 @@ function collectLines(view: EditorView): Token[][] {
 	return [...byLine.values()];
 }
 
+const QUOTE_LINE = /^\s*>/;
+const CALLOUT_START = /^\s*>+\s*\[!/;
+
+/** True when the line belongs to a callout (`> [!note]`), left to Obsidian. */
+function inCallout(state: EditorState, lineFrom: number, cache: Map<number, boolean>): boolean {
+	let line = state.doc.lineAt(lineFrom);
+	if (!QUOTE_LINE.test(line.text)) return false;
+	// Walk up to the first line of this quote (bounded, for very long quotes).
+	for (let i = 0; i < 500 && line.number > 1; i++) {
+		const prev = state.doc.line(line.number - 1);
+		if (!QUOTE_LINE.test(prev.text)) break;
+		line = prev;
+	}
+	let callout = cache.get(line.number);
+	if (callout === undefined) {
+		callout = CALLOUT_START.test(line.text);
+		cache.set(line.number, callout);
+	}
+	return callout;
+}
+
+class QuoteBorderWidget extends WidgetType {
+	eq() {
+		return true;
+	}
+	toDOM() {
+		const span = document.createElement('span');
+		span.className = 'cm-blockquote-border cm-transparent';
+		span.textContent = '>';
+		return span;
+	}
+}
+
+class CheckboxWidget extends WidgetType {
+	constructor(readonly task: string) {
+		super();
+	}
+	eq(other: CheckboxWidget) {
+		return other.task === this.task;
+	}
+	toDOM(view: EditorView) {
+		// Same markup as Obsidian's checkbox, so themes style it the same.
+		const label = document.createElement('label');
+		label.className = 'task-list-label';
+		const input = document.createElement('input');
+		input.type = 'checkbox';
+		input.className = 'task-list-item-checkbox';
+		input.setAttribute('data-task', this.task);
+		input.checked = this.task !== ' ';
+		label.appendChild(input);
+		label.addEventListener('mousedown', (e) => e.preventDefault());
+		input.addEventListener('change', () => toggleTask(view, label, input.checked));
+		return label;
+	}
+}
+
+/** Writes a checkbox click into the text: `[ ]` becomes `[x]` and back. */
+function toggleTask(view: EditorView, el: HTMLElement, checked: boolean) {
+	let pos: number;
+	try {
+		pos = view.posAtDOM(el);
+	} catch {
+		return;
+	}
+	if (view.state.sliceDoc(pos, pos + 1) !== '[') return;
+	view.dispatch({
+		changes: { from: pos + 1, to: pos + 2, insert: checked ? 'x' : ' ' },
+		userEvent: 'input',
+	});
+}
+
+const hideBlock = Decoration.replace({});
+const bulletMark = Decoration.mark({ class: 'list-bullet' });
+const numberMark = Decoration.mark({ class: 'list-number' });
+const transparentMark = Decoration.mark({ class: 'cm-transparent' });
+const quoteBorder = Decoration.replace({ widget: new QuoteBorderWidget() });
+const atomicMark = Decoration.mark({});
+
+/** The decorations that draw block markers like Obsidian does off the cursor line. */
+function blockDecorations(block: Block): CMRange<Decoration>[] {
+	const out: CMRange<Decoration>[] = [];
+	const isTask = block.parts.some((p) => p.kind === 'task');
+	for (const part of block.parts) {
+		switch (part.kind) {
+			case 'heading':
+				out.push(hideBlock.range(part.from, part.to));
+				break;
+			case 'bullet':
+				if (isTask) {
+					out.push(hideBlock.range(part.from, part.to));
+				} else {
+					// Same as Obsidian: a class on the "-" itself, so it stays inside
+					// the list marker's element and keeps the same indentation.
+					out.push(bulletMark.range(part.from, part.from + 1));
+				}
+				break;
+			case 'number':
+				out.push(numberMark.range(part.from, part.to));
+				break;
+			case 'task':
+				out.push(
+					Decoration.replace({ widget: new CheckboxWidget(part.task ?? ' ') }).range(part.from, part.to),
+				);
+				break;
+			case 'quote':
+				out.push((part.firstLevel ? transparentMark : quoteBorder).range(part.from, part.from + 1));
+				break;
+		}
+	}
+	return out;
+}
+
 class LiveReadView {
 	decorations: DecorationSet = Decoration.none;
+	/** Ranges the cursor jumps over: hidden markers and block markers. */
+	atomic: DecorationSet = Decoration.none;
 	hidden: Range[] = [];
 	pairs: MarkerPair[] = [];
 	links: LinkSpan[] = [];
 	linkEnds: Range[] = [];
+	blocks: Block[] = [];
+	/** Ranges where typed text always goes after the range (see insertPosition). */
+	typeAfter: Range[] = [];
 
 	constructor(view: EditorView) {
 		this.compute(view);
+	}
+
+	/** True when there is anything for the editing helpers to handle. */
+	get active() {
+		return this.hidden.length > 0 || this.blocks.length > 0;
 	}
 
 	update(update: ViewUpdate) {
@@ -104,16 +237,31 @@ class LiveReadView {
 	}
 
 	private compute(view: EditorView) {
-		const result: HiddenResult = isLivePreview(view.state)
-			? computeHidden(collectLines(view))
-			: { pairs: [], hidden: [], links: [], linkEnds: [] };
+		const { state } = view;
+		const live = isLivePreview(state);
+		const lines = live ? collectLines(view) : [];
+		const result: HiddenResult = computeHidden(lines.map((l) => l.tokens));
+		const callouts = new Map<number, boolean>();
+		const blocks = lines
+			.map((l) => (inCallout(state, l.from, callouts) ? null : parseBlock(l.from, l.text, l.tokens)))
+			.filter((b): b is Block => b !== null)
+			.sort((a, b) => a.from - b.from);
+
 		this.pairs = result.pairs;
 		this.links = result.links;
 		this.linkEnds = result.linkEnds;
-		if (sameRanges(this.hidden, result.hidden)) return;
+		this.blocks = blocks;
+		this.typeAfter = [...result.linkEnds, ...blocks];
 		this.hidden = result.hidden;
 		this.decorations = Decoration.set(
-			result.hidden.map((r) => hideMarker.range(r.from, r.to)),
+			[
+				...result.hidden.map((r) => hideMarker.range(r.from, r.to)),
+				...blocks.flatMap((b) => blockDecorations(b)),
+			],
+			true,
+		);
+		this.atomic = Decoration.set(
+			mergeRanges([...result.hidden, ...blocks]).map((r) => atomicMark.range(r.from, r.to)),
 			true,
 		);
 	}
@@ -158,11 +306,11 @@ function arrow(forward: boolean) {
 	return (view: EditorView): boolean => {
 		const p = view.plugin(liveReadPlugin);
 		const pos = singleCursor(view);
-		if (!p || pos === null || p.hidden.length === 0) return false;
+		if (!p || pos === null || !p.active) return false;
 		const start = skipHiddenEdge(pos, p.hidden, forward);
 		const moved = view.moveByChar(EditorSelection.cursor(start), forward).head;
 		if (moved === start) return false;
-		const target = skipHiddenEdge(moved, p.hidden, moved > start);
+		const target = skipBlock(skipHiddenEdge(moved, p.hidden, moved > start), p.blocks, moved > start);
 		view.dispatch({
 			selection: { anchor: target },
 			userEvent: 'select',
@@ -180,8 +328,8 @@ const editKeys = keymap.of([
 		run: (view) => {
 			const p = view.plugin(liveReadPlugin);
 			const pos = singleCursor(view);
-			if (!p || pos === null || p.hidden.length === 0) return false;
-			const del = backspaceRange(pos, p.hidden, p.pairs, (x) => prevBreak(view.state, x));
+			if (!p || pos === null || !p.active) return false;
+			const del = backspaceRange(pos, p.hidden, p.pairs, (x) => prevBreak(view.state, x), p.blocks);
 			return applyDelete(view, del, 'delete.backward');
 		},
 	},
@@ -190,9 +338,14 @@ const editKeys = keymap.of([
 		run: (view) => {
 			const p = view.plugin(liveReadPlugin);
 			const pos = singleCursor(view);
-			if (!p || pos === null || p.hidden.length === 0) return false;
-			const del = deleteForwardRange(pos, p.hidden, p.pairs, view.state.doc.length, (x) =>
-				nextBreak(view.state, x),
+			if (!p || pos === null || !p.active) return false;
+			const del = deleteForwardRange(
+				pos,
+				p.hidden,
+				p.pairs,
+				view.state.doc.length,
+				(x) => nextBreak(view.state, x),
+				p.blocks,
 			);
 			return applyDelete(view, del, 'delete.forward');
 		},
@@ -203,8 +356,8 @@ const editKeys = keymap.of([
 const edgeTyping = EditorView.inputHandler.of((view, from, to, text) => {
 	if (from !== to || view.composing) return false;
 	const p = view.plugin(liveReadPlugin);
-	if (!p || p.hidden.length === 0 || singleCursor(view) !== from) return false;
-	const pos = insertPosition(from, p.hidden, p.linkEnds);
+	if (!p || !p.active || singleCursor(view) !== from) return false;
+	const pos = insertPosition(from, p.hidden, p.typeAfter);
 	if (pos === from) return false;
 	view.dispatch({
 		changes: { from: pos, insert: text },
@@ -259,7 +412,7 @@ const styledTyping = EditorView.inputHandler.of((view, from, to, text) => {
 		view.dispatch({ userEvent: 'input.type', scrollIntoView: true, ...spec });
 
 	if (isSpace(text)) {
-		const space = planSpaceInput(from, text, p.pairs, p.hidden, deferred, p.linkEnds);
+		const space = planSpaceInput(from, text, p.pairs, p.hidden, deferred, p.typeAfter);
 		if (space) {
 			apply({
 				changes: { from: space.from, insert: space.insert },
@@ -270,7 +423,7 @@ const styledTyping = EditorView.inputHandler.of((view, from, to, text) => {
 		}
 		if (!pending.length) return false;
 		// A space before the first letter of a pending style stays plain.
-		const at = insertPosition(from, p.hidden, p.linkEnds);
+		const at = insertPosition(from, p.hidden, p.typeAfter);
 		apply({ changes: { from: at, insert: text }, selection: { anchor: at + text.length }, effects: keep });
 		return true;
 	}
@@ -298,7 +451,7 @@ const styledTyping = EditorView.inputHandler.of((view, from, to, text) => {
 		pending: styles,
 		pairs: p.pairs,
 		hidden: p.hidden,
-		linkEnds: p.linkEnds,
+		linkEnds: p.typeAfter,
 		slice: (a, b) => view.state.sliceDoc(a, b),
 	});
 	apply({ changes: { from: edit.from, insert: edit.insert }, selection: { anchor: edit.cursor } });
@@ -396,7 +549,7 @@ export function liveReadExtension(): Extension[] {
 		pendingField,
 		deferredField,
 		linkClicks,
-		EditorView.atomicRanges.of((view) => view.plugin(liveReadPlugin)?.decorations ?? Decoration.none),
+		EditorView.atomicRanges.of((view) => view.plugin(liveReadPlugin)?.atomic ?? Decoration.none),
 		Prec.highest(editKeys),
 		Prec.highest(styledTyping),
 		Prec.high(edgeTyping),

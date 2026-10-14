@@ -162,13 +162,33 @@ function hiddenStartingAt(pos: number, hidden: Range[]): Range | undefined {
  * styled span stays inside it, text typed at the start goes outside. Both
  * cases mean "if the cursor is right after a hidden marker, type before it".
  */
-export function insertPosition(pos: number, hidden: Range[], linkEnds: readonly Range[] = []): number {
+export function insertPosition(pos: number, hidden: Range[], typeAfter: readonly Range[] = []): number {
 	const r = hiddenEndingAt(pos, hidden);
 	const q = r ? r.from : pos;
-	// Links are different: text typed at the end of a link goes after it,
-	// so typing after [[note]] does not change which note it points to.
-	const end = linkEnds.find((l) => l.from === q);
+	// `typeAfter` holds ranges where text always goes after the range:
+	// - the end of a link (`](url)`, `]]`), so typing after [[note]] does not
+	//   change which note it points to;
+	// - block markers (`- `, `# `), so typing at the line start goes after them.
+	const end = typeAfter.find((l) => l.from <= q && q < l.to);
 	return end ? end.to : q;
+}
+
+/** A block marker at the start of a line, like `- ` or `# `. */
+export interface BlockRange extends Range {
+	/** Start of its line (before any indentation). */
+	lineFrom: number;
+}
+
+/**
+ * Arrow keys and block markers: moving right into a marker jumps to the text
+ * after it. Moving left out of the text goes to the end of the line above,
+ * so the cursor never stops inside or before a bullet.
+ */
+export function skipBlock(pos: number, blocks: readonly BlockRange[], forward: boolean): number {
+	const b = blocks.find((x) => x.from <= pos && pos < x.to);
+	if (!b) return pos;
+	if (forward) return b.to;
+	return b.from === b.lineFrom && b.lineFrom > 0 ? b.lineFrom - 1 : b.from;
 }
 
 /**
@@ -184,8 +204,13 @@ export function backspaceRange(
 	hidden: Range[],
 	pairs: MarkerPair[],
 	prevBreak: (p: number) => number,
+	blocks: readonly BlockRange[] = [],
 ): Range | null {
 	const anchor = hiddenEndingAt(pos, hidden)?.from ?? pos;
+	// At the start of a list item, heading or quote: remove its marker, so
+	// the line becomes plain text in one step.
+	const block = blocks.find((b) => anchor === b.to || anchor === b.from);
+	if (block) return { from: block.lineFrom, to: block.to };
 	if (anchor <= 0) return anchor === pos ? null : { from: 0, to: 0 };
 	const del = { from: prevBreak(anchor), to: anchor };
 	const out = expandEmptied(del, hidden, pairs);
@@ -200,8 +225,13 @@ export function deleteForwardRange(
 	pairs: MarkerPair[],
 	docLength: number,
 	nextBreak: (p: number) => number,
+	blocks: readonly BlockRange[] = [],
 ): Range | null {
 	const anchor = hiddenStartingAt(pos, hidden)?.to ?? pos;
+	// At the end of a line followed by a list item, heading or quote: join
+	// the next line's text without its marker.
+	const next = blocks.find((b) => b.lineFrom === anchor + 1);
+	if (next) return { from: anchor, to: next.to };
 	if (anchor >= docLength) return anchor === pos ? null : { from: docLength, to: docLength };
 	const del = { from: anchor, to: nextBreak(anchor) };
 	const out = expandEmptied(del, hidden, pairs);

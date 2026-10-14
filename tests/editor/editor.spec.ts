@@ -30,6 +30,10 @@ interface Styles {
 	embed: boolean;
 	wikiAlias: boolean;
 	inAlias: boolean;
+	/** Still at the start of the line, where block markers can be. */
+	lead: boolean;
+	afterList: boolean;
+	quotes: number;
 }
 
 const fresh = (): Styles => ({
@@ -43,6 +47,9 @@ const fresh = (): Styles => ({
 	embed: false,
 	wikiAlias: false,
 	inAlias: false,
+	lead: true,
+	afterList: false,
+	quotes: 0,
 });
 
 function styleNames(s: Styles): string[] {
@@ -122,6 +129,51 @@ function linkToken(stream: StringStream, s: Styles): string | null | undefined {
 	return undefined;
 }
 
+/** Block marker tokens at the line start, with Obsidian's classes. */
+function blockToken(stream: StringStream, s: Styles): string | null | undefined {
+	if (stream.eatSpace()) return null;
+	if (stream.match(/^>[ \t]*/)) {
+		const n = ++s.quotes;
+		return `formatting formatting-quote formatting-quote-${n} quote quote-${n}`;
+	}
+	const heading = stream.match(/^(#{1,6})(?=[ \t]|$)[ \t]*/) as RegExpMatchArray | null;
+	if (heading) {
+		const n = heading[1]!.length;
+		s.lead = false;
+		return `formatting formatting-header formatting-header-${n} header header-${n}`;
+	}
+	if (!s.afterList) {
+		const list = stream.match(/^([*+-]|\d+[.)])[ \t]+/) as RegExpMatchArray | null;
+		if (list) {
+			s.afterList = true;
+			return `formatting formatting-list formatting-list-${/\d/.test(list[1]!) ? 'ol' : 'ul'} list-1`;
+		}
+	} else if (stream.match(/^\[[ xX]\](?=\s)/)) {
+		s.lead = false;
+		return 'formatting formatting-task meta';
+	}
+	return undefined;
+}
+
+const BLOCK_CLASSES = [
+	'formatting-quote',
+	'formatting-header',
+	'formatting-list',
+	'formatting-list-ul',
+	'formatting-list-ol',
+	'formatting-task',
+	'quote',
+	'header',
+	'list-1',
+	'meta',
+	...[1, 2, 3, 4, 5, 6].flatMap((n) => [
+		`formatting-quote-${n}`,
+		`quote-${n}`,
+		`formatting-header-${n}`,
+		`header-${n}`,
+	]),
+];
+
 const LINK_CLASSES = [
 	'formatting-link',
 	'formatting-link-start',
@@ -158,12 +210,18 @@ const markdownLike = StreamLanguage.define<Styles>({
 			'highlight',
 			'inline-code',
 			...LINK_CLASSES,
+			...BLOCK_CLASSES,
 		].map((name) => [name, tags.content]),
 	),
 	startState: fresh,
 	copyState: (s) => ({ ...s }),
 	token(stream, s) {
 		if (stream.sol()) Object.assign(s, fresh());
+		if (s.lead) {
+			const block = blockToken(stream, s);
+			if (block !== undefined) return block;
+			s.lead = false;
+		}
 		if (s.code) {
 			if (stream.eat('`')) {
 				s.code = false;
@@ -736,4 +794,113 @@ test('with Live Read off or outside Live Preview, Obsidian handles Ctrl+K', () =
 	source.dispatch({ effects: setLivePreview.of(false) });
 	assert.equal(linkContext(source), null);
 	source.destroy();
+});
+
+// Block markers (step 6).
+
+const has = (view: EditorView, selector: string) => view.contentDOM.querySelector(selector) !== null;
+
+test('a heading hides its # even with the cursor on it', () => {
+	const view = makeView('## Title', 8);
+	assert.equal(shownText(view), 'Title');
+	view.destroy();
+	// No text yet: the # stays, so you can see you are making a heading.
+	const empty = makeView('# ', 2);
+	assert.equal(shownText(empty), '# ');
+	empty.destroy();
+});
+
+test('bullets, numbers, checkboxes and quotes are drawn like Obsidian draws them', () => {
+	const view = makeView('- item\n1. one\n- [ ] todo\n> quote\n>> deep', 3);
+	assert.ok(has(view, '.list-bullet'), 'bullet');
+	// Like Obsidian, the bullet is a class on the "-" itself, not a separate
+	// element, so it keeps the list marker's indentation.
+	assert.equal(view.contentDOM.querySelector('.list-bullet')?.textContent, '-');
+	assert.notEqual(view.contentDOM.querySelector('.list-bullet')?.getAttribute('contenteditable'), 'false');
+	assert.ok(has(view, '.list-number'), 'number');
+	assert.ok(has(view, 'input.task-list-item-checkbox'), 'checkbox');
+	assert.ok(has(view, '.cm-transparent'), 'first quote level');
+	assert.ok(has(view, '.cm-blockquote-border'), 'nested quote level');
+	view.destroy();
+});
+
+test('callouts are left to Obsidian', () => {
+	const view = makeView('> [!NOTE] Title\n> body', 3);
+	assert.equal(has(view, '.cm-transparent'), false);
+	assert.equal(shownText(view), '> [!NOTE] Title> body');
+	view.destroy();
+});
+
+test('with Live Read off, nothing is drawn', () => {
+	const view = makeView('- item', 3, false);
+	assert.equal(has(view, '.list-bullet'), false);
+	view.destroy();
+});
+
+test('clicking a checkbox toggles it in the text', () => {
+	const view = makeView('- [ ] todo', 0);
+	const box = view.contentDOM.querySelector('input.task-list-item-checkbox') as HTMLInputElement;
+	assert.equal(box.checked, false);
+	box.checked = true;
+	box.dispatchEvent(new window.Event('change'));
+	assert.equal(doc(view), '- [x] todo');
+	const again = view.contentDOM.querySelector('input.task-list-item-checkbox') as HTMLInputElement;
+	assert.equal(again.checked, true);
+	again.checked = false;
+	again.dispatchEvent(new window.Event('change'));
+	assert.equal(doc(view), '- [ ] todo');
+	view.destroy();
+});
+
+test('typing at the start of a line goes after its marker', () => {
+	const view = makeView('- ab', 0);
+	type(view, 'X');
+	assert.equal(doc(view), '- Xab');
+	view.destroy();
+});
+
+test('arrow keys jump over block markers', () => {
+	const view = makeView('x\n- ab', 1);
+	press(view, 'ArrowRight');
+	assert.equal(cursor(view), 4);
+	press(view, 'ArrowLeft');
+	assert.equal(cursor(view), 1);
+	view.destroy();
+});
+
+test('Backspace at the start of the text turns the line into plain text', () => {
+	for (const [text, pos, out] of [
+		['- ab', 2, 'ab'],
+		['## Title', 3, 'Title'],
+		['- [ ] do', 6, 'do'],
+		['> q', 2, 'q'],
+		['1. one', 3, 'one'],
+		['x\n\t- ab', 5, 'x\nab'],
+	] as const) {
+		const view = makeView(text, pos);
+		press(view, 'Backspace');
+		assert.equal(doc(view), out, text);
+		view.destroy();
+	}
+});
+
+test('Backspace in the middle of item text works as usual', () => {
+	const view = makeView('- abc', 4);
+	press(view, 'Backspace');
+	assert.equal(doc(view), '- ac');
+	view.destroy();
+});
+
+test('Delete at the end of a line joins the next item text without its marker', () => {
+	const view = makeView('x\n- ab', 1);
+	press(view, 'Delete');
+	assert.equal(doc(view), 'xab');
+	view.destroy();
+});
+
+test('bold at the start of a list item: Backspace removes the bullet, not the stars', () => {
+	const view = makeView('- **b**', 4);
+	press(view, 'Backspace');
+	assert.equal(doc(view), '**b**');
+	view.destroy();
 });

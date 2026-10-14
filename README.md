@@ -71,7 +71,26 @@ their text (the note name, or the alias), even under the cursor. Embeds
 - With Live Read off, Ctrl+K does what Obsidian normally does. It is wrapped
   the same way as Ctrl+B (`editor:insert-link`).
 
-Not covered yet: headings, lists, quotes, code blocks, math, callouts.
+Not covered yet: code blocks, math, callouts, tables.
+
+## Block markers
+
+While Live Read is on, block markers at the start of a line never show as
+raw text, even with the cursor on the line:
+
+- Headings hide their `#` (a heading with no text yet keeps it, so you can
+  see you are making one). Change the level with Obsidian's heading commands.
+- Bullets, numbers, checkboxes and quotes are drawn the way Obsidian draws
+  them away from the cursor: the bullet dot, the number, the checkbox and the
+  quote bar. Click a checkbox to tick it.
+- The cursor never stops inside or before a marker; typing at the start of a
+  line goes after it.
+- Backspace at the start of the text removes the marker, so the line becomes
+  plain text. Delete at the end of a line joins the next item's text without
+  its marker.
+- Tab and Shift+Tab indent, and Enter continues lists, as in Obsidian.
+
+Callouts, tables, code blocks and frontmatter are left to Obsidian.
 A style that spans more than one line keeps its markers visible.
 
 ## Build
