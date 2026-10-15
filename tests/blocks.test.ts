@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isBlockToken, parseBlock } from '../src/blocks.ts';
+import { calloutBodyBlock, isBlockToken, parseBlock } from '../src/blocks.ts';
 import {
 	type Token,
 	backspaceRange,
@@ -142,4 +142,43 @@ test('Backspace at the start of bold text in a list item removes the bullet, not
 test('Delete at the end of a line joins the next item text without its marker', () => {
 	assert.deepEqual(deleteForwardRange(1, [], [], 6, next, [ITEM]), { from: 1, to: 4 });
 	assert.equal(deleteForwardRange(0, [], [], 6, next, [ITEM]), null);
+});
+
+test('a list on a callout body line is read from the text after the hidden "> "', () => {
+	// "> - item": the callout hides 0..2, the bullet is 2..4.
+	assert.deepEqual(calloutBodyBlock(2, '- item'), {
+		lineFrom: 2,
+		from: 2,
+		to: 4,
+		parts: [{ kind: 'bullet', from: 2, to: 4 }],
+	});
+	assert.deepEqual(calloutBodyBlock(2, '\t12. one')?.parts, [{ kind: 'number', from: 3, to: 7 }]);
+	assert.deepEqual(calloutBodyBlock(2, '- [x] done'), {
+		lineFrom: 2,
+		from: 2,
+		to: 8,
+		parts: [
+			{ kind: 'bullet', from: 2, to: 4 },
+			{ kind: 'task', from: 4, to: 7, task: 'x' },
+		],
+	});
+	// Not lists: plain text, "-" with no space, a rule.
+	assert.equal(calloutBodyBlock(2, 'text'), null);
+	assert.equal(calloutBodyBlock(2, '-x'), null);
+	assert.equal(calloutBodyBlock(2, '---'), null);
+});
+
+test('chained markers: a callout "> " then "- " act as one', () => {
+	// "x\n> - ab": callout marker 2..4, list marker 4..6, text 6..8.
+	const marks = [
+		{ lineFrom: 4, from: 4, to: 6 },
+		{ lineFrom: 2, from: 2, to: 4 },
+	];
+	assert.equal(insertPosition(2, [], marks), 6);
+	assert.equal(skipBlock(2, marks, true), 6);
+	assert.equal(skipBlock(5, marks, false), 1);
+	// Delete at the end of "x" joins "ab" without "> - ".
+	assert.deepEqual(deleteForwardRange(1, [], [], 8, next, marks), { from: 1, to: 6 });
+	// Backspace at the text start removes only "- ".
+	assert.deepEqual(backspaceRange(6, [], [], prev, marks), { from: 4, to: 6 });
 });

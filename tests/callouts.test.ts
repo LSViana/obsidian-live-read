@@ -6,6 +6,7 @@ import {
 	calloutClickPos,
 	calloutDelete,
 	calloutIcon,
+	calloutLineSpacing,
 	calloutMarkers,
 	calloutTitlePlaceholder,
 	parseCallouts,
@@ -148,4 +149,26 @@ test('a click on the rendered title or body lands at the same spot in the source
 	// No body: the end of the title.
 	const [t] = parseCallouts(lines('> [!note] T'));
 	assert.equal(calloutClickPos(t!, 'body', '', 0, (a, b) => '> [!note] T'.slice(a, b)), 11);
+});
+
+test('spacing: paragraphs and lists get block spacing; items get item spacing', () => {
+	const s = (kinds: ('blank' | 'text' | 'list')[]) =>
+		calloutLineSpacing(kinds).map((x) =>
+			[x.blockTop && 'T', x.blockBottom && 'B', x.itemTop && 't', x.itemBottom && 'b', x.gap && 'g']
+				.filter(Boolean)
+				.join(''),
+		);
+	// One paragraph of two lines.
+	assert.deepEqual(s(['text', 'text']), ['T', 'B']);
+	// Paragraph, then a list right after it: the list is a new block.
+	assert.deepEqual(s(['text', 'list', 'list']), ['T', 'Ttb', 'Btb']);
+	// Paragraph, empty line, paragraph: the empty line is the shared spacing.
+	assert.deepEqual(s(['text', 'blank', 'text']), ['T', 'g', 'B']);
+	// A list item with a continuation line, then another item.
+	assert.deepEqual(s(['list', 'text', 'list']), ['Tt', 'b', 'Btb']);
+	// A list, empty line, paragraph.
+	assert.deepEqual(s(['list', 'blank', 'text']), ['Ttb', 'g', 'B']);
+	// Empty line at the end: it is the bottom spacing.
+	assert.deepEqual(s(['text', 'blank']), ['T', 'g']);
+	assert.deepEqual(s([]), []);
 });

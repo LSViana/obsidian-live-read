@@ -169,8 +169,14 @@ export function insertPosition(pos: number, hidden: Range[], typeAfter: readonly
 	// - the end of a link (`](url)`, `]]`), so typing after [[note]] does not
 	//   change which note it points to;
 	// - block markers (`- `, `# `), so typing at the line start goes after them.
-	const end = typeAfter.find((l) => l.from <= q && q < l.to);
-	return end ? end.to : q;
+	// Markers can follow each other (a callout's `> ` then `- `), so repeat.
+	let at = q;
+	for (let i = 0; i < 5; i++) {
+		const end = typeAfter.find((l) => l.from <= at && at < l.to);
+		if (!end) break;
+		at = end.to;
+	}
+	return at;
 }
 
 /** A block marker at the start of a line, like `- ` or `# `. */
@@ -185,10 +191,16 @@ export interface BlockRange extends Range {
  * so the cursor never stops inside or before a bullet.
  */
 export function skipBlock(pos: number, blocks: readonly BlockRange[], forward: boolean): number {
-	const b = blocks.find((x) => x.from <= pos && pos < x.to);
-	if (!b) return pos;
-	if (forward) return b.to;
-	return b.from === b.lineFrom && b.lineFrom > 0 ? b.lineFrom - 1 : b.from;
+	// Markers can follow each other (a callout's `> ` then `- `), so repeat.
+	let at = pos;
+	for (let i = 0; i < 5; i++) {
+		const b = blocks.find((x) => x.from <= at && at < x.to);
+		if (!b) break;
+		const next = forward ? b.to : b.from === b.lineFrom && b.lineFrom > 0 ? b.lineFrom - 1 : b.from;
+		if (next === at) break;
+		at = next;
+	}
+	return at;
 }
 
 /**
@@ -231,7 +243,16 @@ export function deleteForwardRange(
 	// At the end of a line followed by a list item, heading or quote: join
 	// the next line's text without its marker.
 	const next = blocks.find((b) => b.lineFrom === anchor + 1);
-	if (next) return { from: anchor, to: next.to };
+	if (next) {
+		// Also drop a marker that follows (a callout's `> ` then `- `).
+		let to = next.to;
+		for (let i = 0; i < 5; i++) {
+			const more = blocks.find((b) => b.from === to && b.to > to);
+			if (!more) break;
+			to = more.to;
+		}
+		return { from: anchor, to };
+	}
 	if (anchor >= docLength) return anchor === pos ? null : { from: docLength, to: docLength };
 	const del = { from: anchor, to: nextBreak(anchor) };
 	const out = expandEmptied(del, hidden, pairs);

@@ -1190,3 +1190,58 @@ test('paragraph spacing classes: above the first, below the last, one gap betwee
 	assert.deepEqual(classes, ['', 'p-first', '', 'gap', 'p-last']);
 	view.destroy();
 });
+
+// Lists inside callouts (step 10).
+
+const CALLOUT_LIST = '> [!tip] T\n> - item\n> 1. one\n> - [ ] task\n> \tsub';
+
+test('lists inside a callout draw their bullet, number and checkbox', () => {
+	const view = makeView(CALLOUT_LIST, 14);
+	assert.ok(has(view, '.list-bullet'), 'bullet');
+	assert.ok(has(view, '.list-number'), 'number');
+	assert.ok(has(view, 'input.task-list-item-checkbox'), 'checkbox');
+	// No raw "> " shows, and the list markers are drawn, not typed text.
+	assert.equal(view.contentDOM.textContent?.includes('>'), false);
+	view.destroy();
+});
+
+test('in a callout list, typing at the line start goes after the bullet', () => {
+	const view = makeView(CALLOUT_LIST, CALLOUT_LIST.indexOf('> - item'));
+	type(view, 'X');
+	assert.ok(doc(view).includes('> - Xitem'));
+	view.destroy();
+});
+
+test('in a callout list, Backspace at the item text removes only the bullet', () => {
+	const view = makeView(CALLOUT_LIST, CALLOUT_LIST.indexOf('item'));
+	press(view, 'Backspace');
+	assert.ok(doc(view).includes('\n> item\n'));
+	view.destroy();
+});
+
+test('in a callout list, arrows go from the line above straight to the item text', () => {
+	const view = makeView(CALLOUT_LIST, CALLOUT_LIST.indexOf('\n> - item'));
+	press(view, 'ArrowRight');
+	assert.equal(cursor(view), CALLOUT_LIST.indexOf('item'));
+	press(view, 'ArrowLeft');
+	assert.equal(cursor(view), CALLOUT_LIST.indexOf('\n> - item'));
+	view.destroy();
+});
+
+test('a checkbox in a callout toggles', () => {
+	const view = makeView(CALLOUT_LIST, 3);
+	const box = view.contentDOM.querySelector('input.task-list-item-checkbox') as HTMLInputElement;
+	box.checked = true;
+	box.dispatchEvent(new window.Event('change'));
+	assert.ok(doc(view).includes('> - [x] task'));
+	view.destroy();
+});
+
+test('callout lists get list item spacing classes', () => {
+	const view = makeView('> [!note] T\n> text\n> - a\n> - b', 13);
+	const classes = lineEls(view).map((el) =>
+		['p-first', 'p-last', 'li-top', 'li-bottom'].filter((k) => el.classList.contains(`live-read-callout-${k}`)).join(','),
+	);
+	assert.deepEqual(classes, ['', 'p-first', 'p-first,li-top,li-bottom', 'p-last,li-top,li-bottom']);
+	view.destroy();
+});

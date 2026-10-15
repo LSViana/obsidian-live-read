@@ -73,3 +73,20 @@ export function parseBlock(lineFrom: number, text: string, tokens: readonly Toke
 
 	return { lineFrom, from: parts[0]!.from, to: after(parts[parts.length - 1]!.to), parts };
 }
+
+/**
+ * A list item on a callout body line, read from the text after the
+ * callout's hidden `> ` (which ends at `markerTo`). Read from the text, not
+ * from the editor's tokens, so it works however the editor tokenizes lists
+ * inside quotes. Backspace at the item text then removes only the list
+ * marker, and the line stays in the callout.
+ */
+export function calloutBodyBlock(markerTo: number, rest: string): Block | null {
+	const m = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(\[(.)\](?=[ \t]|$)[ \t]*)?/.exec(rest);
+	if (!m) return null;
+	const from = markerTo + m[1]!.length;
+	const listTo = from + m[2]!.length + m[3]!.length;
+	const parts: BlockPart[] = [{ kind: /\d/.test(m[2]!) ? 'number' : 'bullet', from, to: listTo }];
+	if (m[4]) parts.push({ kind: 'task', from: listTo, to: listTo + 3, task: m[5]! });
+	return { lineFrom: markerTo, from, to: markerTo + m[0].length, parts };
+}

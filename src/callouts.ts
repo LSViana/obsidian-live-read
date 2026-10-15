@@ -244,3 +244,72 @@ export function calloutClickPos(
 	const last = c.body[c.body.length - 1]!;
 	return i < positions.length ? positions[i]! : last.lineTo;
 }
+
+export type BodyLineKind = 'blank' | 'text' | 'list';
+
+export interface LineSpacing {
+	/** Paragraph or list spacing above (a block starts right after another). */
+	blockTop: boolean;
+	/** Paragraph or list spacing below (the last block of the callout). */
+	blockBottom: boolean;
+	/** List item spacing above and below. */
+	itemTop: boolean;
+	itemBottom: boolean;
+	/** An empty line between blocks: one spacing tall. */
+	gap: boolean;
+}
+
+/**
+ * Vertical spacing of callout body lines, so the callout keeps the same
+ * layout as Obsidian's rendered one when the cursor enters it. Rendered
+ * paragraphs and lists have --p-spacing above and below (shared between
+ * two blocks), and each list item has --list-spacing above and below.
+ *
+ * Blocks are runs of non-empty lines. A list right after text starts a new
+ * block (a list can interrupt a paragraph); text right after a list item
+ * continues that item. An empty line between blocks supplies the shared
+ * spacing itself.
+ */
+export function calloutLineSpacing(kinds: readonly BodyLineKind[]): LineSpacing[] {
+	const out: LineSpacing[] = kinds.map(() => ({
+		blockTop: false,
+		blockBottom: false,
+		itemTop: false,
+		itemBottom: false,
+		gap: false,
+	}));
+	let blockStart = -1;
+	let blockIsList = false;
+	let itemStart = -1;
+	const closeItem = (end: number) => {
+		if (itemStart >= 0) {
+			out[itemStart]!.itemTop = true;
+			out[end]!.itemBottom = true;
+		}
+		itemStart = -1;
+	};
+	kinds.forEach((kind, i) => {
+		const prev = i > 0 ? kinds[i - 1]! : null;
+		if (kind === 'blank') {
+			out[i]!.gap = true;
+			if (prev && prev !== 'blank') closeItem(i - 1);
+			blockStart = -1;
+			return;
+		}
+		const newBlock = blockStart < 0 || (kind === 'list' && !blockIsList);
+		if (kind === 'list' && prev && prev !== 'blank') closeItem(i - 1);
+		if (newBlock) {
+			blockStart = i;
+			blockIsList = kind === 'list';
+			// After an empty line, that line is the spacing.
+			if (prev !== 'blank') out[i]!.blockTop = true;
+		}
+		if (kind === 'list') itemStart = i;
+	});
+	const last = kinds.length - 1;
+	if (last >= 0 && kinds[last] !== 'blank') {
+		closeItem(last);
+		out[last]!.blockBottom = true;
+	}
+	return out;
+}

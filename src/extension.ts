@@ -45,7 +45,7 @@ import {
 	linkAt,
 	planLinkEdit,
 } from './links';
-import { type Block, isBlockToken, parseBlock } from './blocks';
+import { type Block, calloutBodyBlock, isBlockToken, parseBlock } from './blocks';
 import {
 	type FenceBlock,
 	fenceBackspace,
@@ -59,11 +59,13 @@ import {
 	skipFence,
 } from './fences';
 import {
+	type BodyLineKind,
 	type Callout,
 	calloutBackspace,
 	calloutClickPos,
 	calloutDelete,
 	calloutIcon,
+	calloutLineSpacing,
 	calloutMarkers,
 	calloutTitlePlaceholder,
 	parseCallouts,
@@ -274,11 +276,6 @@ class LiveReadView {
 		const live = isLivePreview(state);
 		const lines = live ? collectLines(view) : [];
 		const result: HiddenResult = computeHidden(lines.map((l) => l.tokens));
-		const callouts = new Map<number, boolean>();
-		const blocks = lines
-			.map((l) => (inCallout(state, l.from, callouts) ? null : parseBlock(l.from, l.text, l.tokens)))
-			.filter((b): b is Block => b !== null)
-			.sort((a, b) => a.from - b.from);
 		if (!live) {
 			this.fences = [];
 			this.callouts = [];
@@ -291,6 +288,29 @@ class LiveReadView {
 			);
 			this.fenceDoc = state.doc;
 		}
+		const calloutLines = new Set<number>();
+		const calloutBlocks: Block[] = [];
+		const { from: vf, to: vt } = view.viewport;
+		for (const c of this.callouts) {
+			if (c.to < vf || c.from > vt) continue;
+			for (const line of c.body) {
+				calloutLines.add(line.lineFrom);
+				// Lists in a callout Live Read draws: its "> " is hidden by the
+				// callout, so the list marker starts after it.
+				const block = calloutBodyBlock(line.to, state.sliceDoc(line.to, line.lineTo));
+				if (block) calloutBlocks.push(block);
+			}
+		}
+		const callouts = new Map<number, boolean>();
+		const blocks = lines
+			.map((l) => {
+				if (calloutLines.has(l.from)) return null;
+				// Callouts Live Read does not draw (nested ones) are left alone.
+				return inCallout(state, l.from, callouts) ? null : parseBlock(l.from, l.text, l.tokens);
+			})
+			.filter((b): b is Block => b !== null)
+			.concat(calloutBlocks)
+			.sort((a, b) => a.from - b.from);
 		this.calloutMarks = calloutMarkers(this.callouts);
 		const { from: vFrom, to: vTo } = view.viewport;
 		const shownFences = this.fences.filter((f) => f.close.to >= vFrom && f.open.from <= vTo);
@@ -307,7 +327,7 @@ class LiveReadView {
 				...result.hidden.map((r) => hideMarker.range(r.from, r.to)),
 				...blocks.flatMap((b) => blockDecorations(b)),
 				...shownFences.flatMap((f) => fenceDecorations(f, state)),
-				...shownCallouts.flatMap((c) => calloutDecorations(c)),
+				...shownCallouts.flatMap((c) => calloutDecorations(c, state)),
 			],
 			true,
 		);
@@ -492,24 +512,30 @@ class CalloutFold extends WidgetType {
  * custom callout colors apply), hides `> [!type]` and `> `, and adds the
  * icon and fold arrow.
  */
-function calloutDecorations(c: Callout): CMRange<Decoration>[] {
+function calloutDecorations(c: Callout, state: EditorState): CMRange<Decoration>[] {
 	const lines = [c.header, ...c.body];
+	const kinds: BodyLineKind[] = c.body.map((line) =>
+		line.blank
+			? 'blank'
+			: calloutBodyBlock(line.to, state.sliceDoc(line.to, line.lineTo))
+				? 'list'
+				: 'text',
+	);
+	const spacing = calloutLineSpacing(kinds);
 	const out: CMRange<Decoration>[] = lines.map((line, i) => {
-		// Paragraph spacing like Obsidian's (--p-spacing above and below each
-		// paragraph, shared between two paragraphs): space above the first
-		// body paragraph, below the last one, and an empty line between two
-		// paragraphs is exactly one spacing tall.
-		const b = i - 1;
-		const blank = b >= 0 && c.body[b]!.blank === true;
+		// Spacing like Obsidian's rendered callout (see calloutLineSpacing).
+		const s = i > 0 ? spacing[i - 1]! : null;
 		return Decoration.line({
 			class: [
 				'callout',
 				'live-read-callout',
 				i === 0 ? 'live-read-callout-first live-read-callout-title' : '',
 				i === lines.length - 1 ? 'live-read-callout-last' : '',
-				blank ? 'live-read-callout-gap' : '',
-				b === 0 && !blank ? 'live-read-callout-p-first' : '',
-				b >= 0 && b === c.body.length - 1 && !blank ? 'live-read-callout-p-last' : '',
+				s?.gap ? 'live-read-callout-gap' : '',
+				s?.blockTop ? 'live-read-callout-p-first' : '',
+				s?.blockBottom ? 'live-read-callout-p-last' : '',
+				s?.itemTop ? 'live-read-callout-li-top' : '',
+				s?.itemBottom ? 'live-read-callout-li-bottom' : '',
 			]
 				.filter(Boolean)
 				.join(' '),

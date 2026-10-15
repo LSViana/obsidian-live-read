@@ -14,8 +14,22 @@
    own rules for quote lines are more specific than its .callout box rule,
    so the box is set here explicitly, only on Live Read's own class.
    Border and corners go on the first and last line only, and padding is
-   used instead of margins so line heights stay exact. */
+   used instead of margins so line heights stay exact.
+
+   Vertical space is the sum of a few parts, each set by a class below, so
+   the layout matches Obsidian's rendered callout:
+   - box: --size-4-3 above the title and below the last line (the
+     callout's own padding);
+   - block: --p-spacing above and below paragraphs and lists, shared
+     between two blocks;
+   - item: --list-spacing above and below each list item. */
 .markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout {
+	--lr-box-top: 0px;
+	--lr-box-bottom: 0px;
+	--lr-block-top: 0px;
+	--lr-block-bottom: 0px;
+	--lr-item-top: 0px;
+	--lr-item-bottom: 0px;
 	margin: 0 !important;
 	background-color: color-mix(in oklch, var(--callout-color) 10%, transparent) !important;
 	border-style: solid !important;
@@ -29,41 +43,44 @@
 	/* Same inner space as Obsidian's callout box (--callout-padding is
 	   12px 12px 12px 24px by default). Quote lines have a hanging indent
 	   for the ">", which would pull the text and icon out of the box. */
-	padding: 0 var(--size-4-3) 0 var(--size-4-6) !important;
+	padding: calc(var(--lr-box-top) + var(--lr-block-top) + var(--lr-item-top)) var(--size-4-3)
+		calc(var(--lr-box-bottom) + var(--lr-block-bottom) + var(--lr-item-bottom)) var(--size-4-6) !important;
 	text-indent: 0 !important;
 	overflow: visible !important;
 	mix-blend-mode: normal;
 }
 
 .markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-first {
+	--lr-box-top: var(--size-4-3);
 	border-top-width: var(--callout-border-width) !important;
 	border-start-start-radius: var(--callout-radius) !important;
 	border-start-end-radius: var(--callout-radius) !important;
-	padding-top: var(--size-4-3) !important;
 }
 
 .markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-last {
+	--lr-box-bottom: var(--size-4-3);
 	border-bottom-width: var(--callout-border-width) !important;
 	border-end-start-radius: var(--callout-radius) !important;
 	border-end-end-radius: var(--callout-radius) !important;
-	padding-bottom: var(--size-4-3) !important;
 }
 
-/* Paragraphs inside: --p-spacing above the first and below the last, and an
-   empty line between two paragraphs is exactly one --p-spacing tall, so the
-   space between paragraphs is shared, like collapsing margins. */
 .markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-p-first {
-	padding-top: var(--p-spacing) !important;
+	--lr-block-top: var(--p-spacing);
 }
 
 .markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-p-last {
-	padding-bottom: var(--p-spacing) !important;
+	--lr-block-bottom: var(--p-spacing);
 }
 
-.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-p-last.live-read-callout-last {
-	padding-bottom: calc(var(--p-spacing) + var(--size-4-3)) !important;
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-li-top {
+	--lr-item-top: var(--list-spacing);
 }
 
+.markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-li-bottom {
+	--lr-item-bottom: var(--list-spacing);
+}
+
+/* An empty line between two blocks is exactly the shared --p-spacing. */
 .markdown-source-view.mod-cm6 .live-read .cm-line.live-read-callout-gap {
 	line-height: var(--p-spacing) !important;
 }

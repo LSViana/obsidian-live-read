@@ -123,7 +123,8 @@ title even with the cursor inside it, and `> [!type]` and the `> ` at the
 start of each line stay hidden. The box uses Obsidian's own callout classes,
 so theme colors and custom callout types apply.
 
-- Edit the title and the body in place.
+- Edit the title and the body in place. Lists, numbers and checkboxes in the
+  body are drawn the same as outside a callout.
 - Click the icon to pick another type (note, tip, warning, ...).
 - For foldable callouts (`[!note]-` or `[!note]+`), click the arrow to switch
   between folded and open. Obsidian folds it when the cursor leaves.
